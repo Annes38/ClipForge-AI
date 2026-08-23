@@ -177,6 +177,51 @@ export function setClipMedia(id: string, media: MediaInfo): void {
     .run(JSON.stringify(media), nowIso(), id);
 }
 
+/**
+ * Update mutable fields of a clip. If a render parameter changed
+ * (start, duration, aspect) the clip is marked 'pending' and its
+ * previous output reference is cleared, so the caller can kick off a
+ * new render with the same clip id.
+ */
+export interface UpdateClipInput {
+  title?: string;
+  startSeconds?: number;
+  durationSeconds?: number;
+  aspect?: AspectMode;
+}
+
+export function updateClip(id: string, patch: UpdateClipInput): ClipRow {
+  const current = getClip(id);
+  if (!current) throw new Error('Clip not found.');
+  const db = getDb();
+  const next = {
+    title: patch.title ?? current.title,
+    start_seconds: patch.startSeconds ?? current.start_seconds,
+    duration_seconds: patch.durationSeconds ?? current.duration_seconds,
+    aspect: patch.aspect ?? current.aspect,
+  };
+  const reRender =
+    next.start_seconds !== current.start_seconds ||
+    next.duration_seconds !== current.duration_seconds ||
+    next.aspect !== current.aspect;
+  if (reRender) {
+    db.prepare(
+      `UPDATE clips
+         SET title = ?, start_seconds = ?, duration_seconds = ?, aspect = ?,
+             status = 'pending', output_path = NULL, output_json = NULL,
+             error_message = NULL, media_json = NULL, updated_at = ?
+       WHERE id = ?`,
+    ).run(next.title, next.start_seconds, next.duration_seconds, next.aspect, nowIso(), id);
+  } else {
+    db.prepare(
+      `UPDATE clips
+         SET title = ?, updated_at = ?
+       WHERE id = ?`,
+    ).run(next.title, nowIso(), id);
+  }
+  return getClip(id)!;
+}
+
 export function deleteClip(id: string): void {
   getDb().prepare('DELETE FROM clips WHERE id = ?').run(id);
 }

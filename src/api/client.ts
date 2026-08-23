@@ -161,6 +161,40 @@ export async function renderClip(
   );
 }
 
+export interface UpdateClipInput {
+  title: string;
+  startSeconds: number;
+  durationSeconds: number;
+  aspect: 'vertical' | 'source';
+}
+
+export async function updateClip(
+  clipId: string,
+  patch: UpdateClipInput,
+  options: { render?: boolean } = {},
+): Promise<{ clip: Clip; job: RenderJob | null }> {
+  const qs = options.render ? '?render=1' : '';
+  return parse<{ clip: Clip; job: RenderJob | null }>(
+    await fetch(`/api/clips/${clipId}${qs}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(patch),
+    }),
+  );
+}
+
+export async function duplicateClip(
+  clipId: string,
+): Promise<{ clip: Clip }> {
+  return parse<{ clip: Clip }>(
+    await fetch(`/api/clips/${clipId}/duplicate`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({}),
+    }),
+  );
+}
+
 export async function deleteClip(clipId: string): Promise<void> {
   const res = await fetch(`/api/clips/${clipId}`, { method: 'DELETE' });
   if (!res.ok && res.status !== 204) await parse(res);

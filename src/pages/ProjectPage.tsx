@@ -5,6 +5,8 @@ import {
   deleteProject,
   deleteClip,
   renderClip,
+  updateClip as updateClipApi,
+  duplicateClip as duplicateClipApi,
   suggestClips,
   createClipFromSuggestion,
   clipOutputUrl,
@@ -138,6 +140,33 @@ export function ProjectPage({ projectId, onBack, onDeleted }: Props) {
     }
   }
 
+  async function handleDuplicate(clipId: string) {
+    try {
+      await duplicateClipApi(clipId);
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : (err as Error).message);
+    }
+  }
+
+  async function handleUpdateClip(
+    clipId: string,
+    patch: {
+      title: string;
+      startSeconds: number;
+      durationSeconds: number;
+      aspect: 'vertical' | 'source';
+    },
+    options: { render?: boolean } = {},
+  ) {
+    try {
+      await updateClipApi(clipId, patch, options);
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : (err as Error).message);
+    }
+  }
+
   async function handleDeleteProject() {
     if (!confirm('Delete this project and all of its clips?')) return;
     try {
@@ -256,8 +285,14 @@ export function ProjectPage({ projectId, onBack, onDeleted }: Props) {
               <ClipRow
                 key={c.id}
                 clip={c}
+                sourceDuration={sourceDuration}
+                projectInFlight={projectInFlight}
                 onRetry={() => void handleRetryClip(c.id)}
                 onDelete={() => void handleDeleteClip(c.id)}
+                onDuplicate={() => void handleDuplicate(c.id)}
+                onUpdate={(patch, options) =>
+                  void handleUpdateClip(c.id, patch, options)
+                }
               />
             ))}
           </ul>
@@ -452,16 +487,34 @@ export function ProjectPage({ projectId, onBack, onDeleted }: Props) {
 
 function ClipRow({
   clip,
+  sourceDuration,
+  projectInFlight,
   onRetry,
   onDelete,
+  onDuplicate,
+  onUpdate,
 }: {
   clip: Clip;
+  sourceDuration: number | null;
+  projectInFlight: boolean;
   onRetry: () => void;
   onDelete: () => void;
+  onDuplicate: () => void;
+  onUpdate: (
+    patch: {
+      title: string;
+      startSeconds: number;
+      durationSeconds: number;
+      aspect: 'vertical' | 'source';
+    },
+    options?: { render?: boolean },
+  ) => void;
 }) {
   const isPending = clip.status === 'pending' || clip.status === 'processing';
   const isFailed = clip.status === 'failed';
   const isDone = clip.status === 'completed' && clip.hasOutput;
+  const [editing, setEditing] = useState(false);
+
   return (
     <li className="clip-row">
       <div className="clip-row-head">
@@ -469,8 +522,9 @@ function ClipRow({
         <ClipStatusPill status={clip.status} />
       </div>
       <div className="clip-row-meta muted">
-        {formatDuration(clip.startSeconds)} · {formatDuration(clip.durationSeconds)} ·{' '}
-        {clip.aspect === 'vertical' ? '9:16' : 'Source'} ·{' '}
+        {formatDuration(clip.startSeconds)} →{' '}
+        {formatDuration(clip.startSeconds + clip.durationSeconds)} ·{' '}
+        {clip.durationSeconds.toFixed(1)}s · {clip.aspect === 'vertical' ? '9:16' : 'Source'} ·{' '}
         {clip.output
           ? `${formatResolution(clip.output.width, clip.output.height)} · ${formatBytes(
               clip.output.bytes,
@@ -489,9 +543,8 @@ function ClipRow({
         <ProgressBar value={null} label={`Rendering — ${clip.status}`} />
       )}
 
-      {isDone && (
+      {isDone && !editing && (
         <div className="video-wrap" style={{ marginTop: 10 }}>
-          {/* cache-busted so a re-render is never served from cache */}
           <video
             src={`${clipOutputUrl(clip.id)}?v=${clip.updatedAt}`}
             controls
@@ -501,26 +554,184 @@ function ClipRow({
         </div>
       )}
 
-      <div className="btn-row" style={{ marginTop: 10 }}>
-        {isDone && (
-          <a className="btn btn-primary" href={clipDownloadUrl(clip.id)} download>
-            ⬇ Download
-          </a>
-        )}
-        {isFailed && (
-          <button className="btn btn-secondary" onClick={onRetry}>
-            Try again
+      {editing ? (
+        <ClipEditForm
+          clip={clip}
+          sourceDuration={sourceDuration}
+          projectInFlight={projectInFlight}
+          onCancel={() => setEditing(false)}
+          onSave={(patch, render) => {
+            onUpdate(patch, { render });
+            setEditing(false);
+          }}
+        />
+      ) : (
+        <div className="btn-row" style={{ marginTop: 10 }}>
+          {isDone && (
+            <a className="btn btn-primary" href={clipDownloadUrl(clip.id)} download>
+              ⬇ Download
+            </a>
+          )}
+          {isFailed && (
+            <button className="btn btn-secondary" onClick={onRetry}>
+              Try again
+            </button>
+          )}
+          <button
+            className="btn btn-secondary"
+            onClick={() => setEditing(true)}
+            disabled={isPending}
+            title="Edit title, start, duration, or format"
+          >
+            Edit
           </button>
-        )}
+          <button
+            className="btn btn-ghost"
+            onClick={onDuplicate}
+            disabled={isPending || projectInFlight}
+            title="Create a copy of this clip in the same project"
+          >
+            Duplicate
+          </button>
+          <button
+            className="btn btn-ghost"
+            onClick={onDelete}
+            disabled={isPending}
+          >
+            Delete
+          </button>
+        </div>
+      )}
+    </li>
+  );
+}
+
+function ClipEditForm({
+  clip,
+  sourceDuration,
+  projectInFlight,
+  onSave,
+  onCancel,
+}: {
+  clip: Clip;
+  sourceDuration: number | null;
+  projectInFlight: boolean;
+  onSave: (
+    patch: {
+      title: string;
+      startSeconds: number;
+      durationSeconds: number;
+      aspect: 'vertical' | 'source';
+    },
+    render: boolean,
+  ) => void;
+  onCancel: () => void;
+}) {
+  const [title, setTitle] = useState(clip.title);
+  const [start, setStart] = useState(clip.startSeconds);
+  const [duration, setDuration] = useState(clip.durationSeconds);
+  const [aspect, setAspect] = useState<'vertical' | 'source'>(clip.aspect);
+
+  const maxStart =
+    sourceDuration !== null
+      ? Math.max(0, Math.floor(sourceDuration) - 1)
+      : Math.max(0, Math.floor(clip.startSeconds + clip.durationSeconds) - 1);
+
+  // Live validation feedback.
+  const titleEmpty = title.trim().length === 0;
+  const end = start + duration;
+  const overflow =
+    sourceDuration !== null && end - sourceDuration > 0.5;
+  const tooShort = duration < 0.1;
+  const tooLong = duration > 600;
+  const invalid = titleEmpty || overflow || tooShort || tooLong;
+
+  const renderParamChanged =
+    start !== clip.startSeconds ||
+    duration !== clip.durationSeconds ||
+    aspect !== clip.aspect;
+
+  return (
+    <div className="card" style={{ marginTop: 10, background: 'var(--surface)' }}>
+      <h2 style={{ marginBottom: 10 }}>Edit clip</h2>
+
+      <label className="field">
+        <span className="field-label">Title</span>
+        <input
+          type="text"
+          value={title}
+          onChange={(e) => setTitle(e.target.value.slice(0, 80))}
+          maxLength={80}
+        />
+      </label>
+
+      <label className="field">
+        <span className="field-label">Start at — {formatDuration(start)}</span>
+        <input
+          type="range"
+          min={0}
+          max={maxStart}
+          step={0.1}
+          value={Math.min(start, maxStart)}
+          onChange={(e) => setStart(Number(e.target.value))}
+        />
+      </label>
+
+      <label className="field">
+        <span className="field-label">Clip length (seconds)</span>
+        <input
+          type="number"
+          min={0.1}
+          max={600}
+          step={0.1}
+          value={duration}
+          onChange={(e) => setDuration(Math.max(0.1, Number(e.target.value) || 0.1))}
+          inputMode="decimal"
+        />
+      </label>
+
+      <div className="field">
+        <span className="field-label">Format</span>
+        <div className="segmented">
+          <button
+            type="button"
+            aria-pressed={aspect === 'vertical'}
+            onClick={() => setAspect('vertical')}
+          >
+            9:16 Vertical
+          </button>
+          <button
+            type="button"
+            aria-pressed={aspect === 'source'}
+            onClick={() => setAspect('source')}
+          >
+            Keep original
+          </button>
+        </div>
+      </div>
+
+      {overflow && (
+        <div className="alert alert-warn" style={{ marginBottom: 10 }}>
+          End is past the source duration ({formatDuration(sourceDuration!)}).
+        </div>
+      )}
+      {titleEmpty && (
+        <p className="muted" style={{ marginBottom: 8 }}>A title is required.</p>
+      )}
+
+      <div className="btn-row">
         <button
-          className="btn btn-ghost"
-          onClick={onDelete}
-          disabled={isPending}
+          className="btn btn-primary"
+          onClick={() => onSave({ title: title.trim(), startSeconds: start, durationSeconds: duration, aspect }, true)}
+          disabled={invalid || projectInFlight}
         >
-          Delete
+          {renderParamChanged ? 'Save & re-render' : 'Save title'}
+        </button>
+        <button className="btn btn-secondary" onClick={onCancel}>
+          Cancel
         </button>
       </div>
-    </li>
+    </div>
   );
 }
 

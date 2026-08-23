@@ -22,6 +22,7 @@ import {
   getClip,
   listClips,
   toDto as clipToDto,
+  updateClip,
 } from '../db/clips-repo.ts';
 import {
   getClipJob,
@@ -307,6 +308,125 @@ clipsRouter.post('/clips/:clipId/render', (req: Request, res: Response) => {
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
   }
+});
+
+/**
+ * PATCH /api/clips/:clipId
+ *
+ * Update a clip's title, start, duration or aspect. If any render
+ * parameter changed, the existing output is invalidated and the clip is
+ * reset to 'pending'. The caller can immediately follow up with
+ * POST /api/clips/:clipId/render to actually re-render, or set
+ * `?render=1` in this same call to render in the same request.
+ */
+clipsRouter.patch('/clips/:clipId', (req: Request, res: Response) => {
+  if (!isValidClipId(req.params.clipId)) {
+    res.status(400).json({ error: 'Invalid clip id.' });
+    return;
+  }
+  const clip = getClip(req.params.clipId);
+  if (!clip) {
+    res.status(404).json({ error: 'Clip not found.' });
+    return;
+  }
+  const project = getProject(clip.project_id);
+  if (!project) {
+    res.status(404).json({ error: 'Project not found.' });
+    return;
+  }
+
+  // Reuse the same validator the create path uses — empty body is fine,
+  // we just won't change anything.
+  const validation = validateClipParams(req.body ?? {});
+  if (!validation.ok) {
+    res.status(400).json({ error: validation.error });
+    return;
+  }
+  const { title, startSeconds, durationSeconds, aspect } = validation.value;
+
+  // Re-validate segment against the source.
+  const sourceDuration = project.media_json
+    ? safeParseMediaDuration(project.media_json)
+    : null;
+  const outOfRange = checkSegmentFitsSource(
+    startSeconds,
+    durationSeconds,
+    sourceDuration,
+  );
+  if (outOfRange) {
+    res.status(400).json({ error: outOfRange });
+    return;
+  }
+
+  // If the project is already busy, refuse to start a new render but
+  // still allow a title-only update.
+  const renderParamChanged =
+    clip.start_seconds !== startSeconds ||
+    clip.duration_seconds !== durationSeconds ||
+    clip.aspect !== aspect;
+  if (renderParamChanged && projectHasActiveJob(project.id)) {
+    res.status(409).json({
+      error:
+        'This project is already processing another clip. Wait for it to finish before editing.',
+    });
+    return;
+  }
+
+  const updated = updateClip(clip.id, {
+    title,
+    startSeconds,
+    durationSeconds,
+    aspect,
+  });
+
+  // If the user opted in to render, kick it off now.
+  const wantsRender = req.query.render === '1' || req.query.render === 'true';
+  if (renderParamChanged && wantsRender && !isClipJobRunning(clip.id)) {
+    try {
+      const job = startClipRender({ clipId: clip.id });
+      res.json({ clip: clipToDto(updated), job: clipJobPayload(clip.id) ?? job });
+      return;
+    } catch (err) {
+      res.status(500).json({ error: (err as Error).message });
+      return;
+    }
+  }
+
+  res.json({ clip: clipToDto(updated), job: clipJobPayload(clip.id) });
+});
+
+/**
+ * POST /api/clips/:clipId/duplicate
+ *
+ * Create a new clip in the same project with the same trim/aspect but
+ * a different title ("<title> (copy)"). The new clip starts as pending;
+ * the caller can hit POST /api/clips/:newId/render to render it.
+ */
+clipsRouter.post('/clips/:clipId/duplicate', (req: Request, res: Response) => {
+  if (!isValidClipId(req.params.clipId)) {
+    res.status(400).json({ error: 'Invalid clip id.' });
+    return;
+  }
+  const clip = getClip(req.params.clipId);
+  if (!clip) {
+    res.status(404).json({ error: 'Clip not found.' });
+    return;
+  }
+  const project = getProject(clip.project_id);
+  if (!project) {
+    res.status(404).json({ error: 'Project not found.' });
+    return;
+  }
+
+  const newTitle = `${clip.title} (copy)`.slice(0, 80);
+  const newClip = createClip({
+    projectId: clip.project_id,
+    title: newTitle,
+    startSeconds: clip.start_seconds,
+    durationSeconds: clip.duration_seconds,
+    aspect: clip.aspect as 'vertical' | 'source',
+  });
+  res.status(201).json({ clip: clipToDto(newClip) });
 });
 
 /** Shared handler for streaming a clip's rendered output. */
