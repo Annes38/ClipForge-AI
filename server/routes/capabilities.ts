@@ -62,7 +62,7 @@ capabilitiesRouter.get('/', (_req, res) => {
       label: 'Transcription',
       state: 'unavailable',
       detail:
-        'Whisper model weights cannot be downloaded in this environment (network/TLS blocked) and no free external transcription API is assumed. Not implemented — no fake transcripts are produced.',
+        'Whisper model weights cannot be downloaded in this environment (network/TLS blocked) and no free external transcription API is assumed. The integration point is in place (server/media/transcriber.ts) — set CLIPFORGE_WHISPER to a whisper.cpp / faster-whisper binary once it is installed.',
     },
     {
       id: 'scene-detection',

@@ -44,6 +44,26 @@ CREATE TABLE IF NOT EXISTS clips (
   FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
 );
 CREATE INDEX IF NOT EXISTS idx_clips_project_id ON clips(project_id, created_at DESC);
+
+/**
+ * Transcripts. One per project (the source video). When transcription
+ * runs, segments are persisted here. UI never invents segments; the
+ * status field distinguishes 'unavailable', 'pending', 'running',
+ * 'completed' and 'failed' so the UI can be honest about what is real.
+ */
+CREATE TABLE IF NOT EXISTS transcripts (
+  project_id       TEXT PRIMARY KEY,
+  status           TEXT NOT NULL DEFAULT 'pending',
+  language         TEXT,
+  engine           TEXT,
+  model            TEXT,
+  segment_count    INTEGER NOT NULL DEFAULT 0,
+  error_message    TEXT,
+  segments_json    TEXT,
+  created_at       TEXT NOT NULL,
+  updated_at       TEXT NOT NULL,
+  FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+);
 `;
 
 export function getDb(dbPath: string = DB_PATH): DatabaseSync {
@@ -53,7 +73,25 @@ export function getDb(dbPath: string = DB_PATH): DatabaseSync {
   db.exec('PRAGMA journal_mode = WAL;');
   db.exec('PRAGMA foreign_keys = ON;');
   db.exec(SCHEMA);
+  // Lightweight in-place migrations. We only run idempotent ALTERs that
+  // add columns when missing — older DB files pre-dating the transcripts
+  // table would otherwise crash.
+  ensureColumn(db, 'transcripts', 'segments_json', 'TEXT');
   return db;
+}
+
+function ensureColumn(
+  db: DatabaseSync,
+  table: string,
+  column: string,
+  type: string,
+): void {
+  const rows = db
+    .prepare(`PRAGMA table_info(${table})`)
+    .all() as Array<{ name: string }>;
+  if (!rows.some((r) => r.name === column)) {
+    db.exec(`ALTER TABLE ${table} ADD COLUMN ${column} ${type}`);
+  }
 }
 
 export function closeDb(): void {
