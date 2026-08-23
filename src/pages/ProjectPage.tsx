@@ -5,11 +5,19 @@ import {
   deleteProject,
   deleteClip,
   renderClip,
+  suggestClips,
+  createClipFromSuggestion,
   clipOutputUrl,
   clipDownloadUrl,
   ApiError,
 } from '../api/client.ts';
-import type { AspectMode, Clip, ClipStatus, Project } from '../api/types.ts';
+import type {
+  AspectMode,
+  Clip,
+  ClipStatus,
+  HighlightCandidate,
+  Project,
+} from '../api/types.ts';
 import { TopBar } from '../components/TopBar.tsx';
 import { ProgressBar } from '../components/ProgressBar.tsx';
 import {
@@ -33,6 +41,16 @@ export function ProjectPage({ projectId, onBack, onDeleted }: Props) {
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+
+  // Suggestion state
+  const [suggestions, setSuggestions] = useState<HighlightCandidate[]>([]);
+  const [suggestError, setSuggestError] = useState<string | null>(null);
+  const [suggestLoading, setSuggestLoading] = useState(false);
+  const [suggestMeta, setSuggestMeta] = useState<{
+    sceneCount: number;
+    silenceCount: number;
+  } | null>(null);
+  const [acceptedIdx, setAcceptedIdx] = useState<Set<number>>(new Set());
 
   // Form state
   const [title, setTitle] = useState('');
@@ -130,6 +148,56 @@ export function ProjectPage({ projectId, onBack, onDeleted }: Props) {
     }
   }
 
+  async function handleSuggest() {
+    setSuggestLoading(true);
+    setSuggestError(null);
+    setAcceptedIdx(new Set());
+    try {
+      const result = await suggestClips(projectId, {
+        max: 8,
+        minDuration: 10,
+        maxDuration: 60,
+      });
+      setSuggestions(result.candidates);
+      setSuggestMeta({
+        sceneCount: result.rawSceneChangeCount,
+        silenceCount: result.rawSilenceCount,
+      });
+    } catch (err) {
+      setSuggestError(err instanceof ApiError ? err.message : (err as Error).message);
+      setSuggestions([]);
+      setSuggestMeta(null);
+    } finally {
+      setSuggestLoading(false);
+    }
+  }
+
+  async function handleAcceptSuggestion(idx: number) {
+    const c = suggestions[idx];
+    if (!c) return;
+    const baseTitle = c.reason || 'Suggestion';
+    const t = window.prompt('Title for this clip?', baseTitle);
+    if (t === null) return;
+    const trimmed = t.trim();
+    if (!trimmed) return;
+    try {
+      await createClipFromSuggestion(projectId, {
+        title: trimmed.slice(0, 80),
+        startSeconds: c.startSeconds,
+        durationSeconds: c.durationSeconds,
+        aspect: 'vertical',
+      });
+      setAcceptedIdx((prev) => {
+        const next = new Set(prev);
+        next.add(idx);
+        return next;
+      });
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : (err as Error).message);
+    }
+  }
+
   if (loading) {
     return (
       <>
@@ -193,6 +261,67 @@ export function ProjectPage({ projectId, onBack, onDeleted }: Props) {
               />
             ))}
           </ul>
+        )}
+      </div>
+
+      {/* ---------------- Highlight suggestions ---------------- */}
+      <div className="card">
+        <div className="section-head">
+          <h2>Suggested clips</h2>
+          {suggestions.length > 0 && (
+            <span className="muted">{suggestions.length}</span>
+          )}
+        </div>
+        <p className="muted" style={{ marginBottom: 10 }}>
+          Detected from real scene changes and silence in the source video.
+          No AI model is used.
+        </p>
+        <button
+          className="btn btn-secondary"
+          onClick={() => void handleSuggest()}
+          disabled={suggestLoading || projectInFlight}
+        >
+          {suggestLoading
+            ? 'Analyzing video…'
+            : suggestions.length > 0
+              ? '↻ Re-analyze'
+              : '✨ Suggest clips'}
+        </button>
+
+        {suggestError && (
+          <div className="alert alert-error" style={{ marginTop: 10 }}>
+            <strong>Suggestion failed</strong>
+            {suggestError}
+          </div>
+        )}
+
+        {suggestMeta && (
+          <p className="muted" style={{ marginTop: 8 }}>
+            Detected {suggestMeta.sceneCount} scene change
+            {suggestMeta.sceneCount === 1 ? '' : 's'} and{' '}
+            {suggestMeta.silenceCount} silence region
+            {suggestMeta.silenceCount === 1 ? '' : 's'} in the source.
+          </p>
+        )}
+
+        {suggestions.length > 0 && (
+          <ul className="clip-list" style={{ marginTop: 10 }}>
+            {suggestions.map((c, idx) => (
+              <SuggestionRow
+                key={`${c.startSeconds}-${c.durationSeconds}-${idx}`}
+                candidate={c}
+                accepted={acceptedIdx.has(idx)}
+                onAccept={() => void handleAcceptSuggestion(idx)}
+              />
+            ))}
+          </ul>
+        )}
+
+        {suggestions.length === 0 && !suggestLoading && !suggestError && suggestMeta && (
+          <p className="muted" style={{ marginTop: 10 }}>
+            No candidates above the default thresholds. Try Re-analyze after
+            editing the source, or lower the sensitivity later.
+          </p>
         )}
       </div>
 
@@ -404,4 +533,44 @@ function ClipStatusPill({ status }: { status: ClipStatus }) {
   };
   const { label, cls } = map[status];
   return <span className={cls}>{label}</span>;
+}
+
+function SuggestionRow({
+  candidate,
+  accepted,
+  onAccept,
+}: {
+  candidate: HighlightCandidate;
+  accepted: boolean;
+  onAccept: () => void;
+}) {
+  const pct = Math.round(candidate.score * 100);
+  return (
+    <li className="clip-row">
+      <div className="clip-row-head">
+        <div className="clip-row-title">
+          {formatDuration(candidate.startSeconds)} →{' '}
+          {formatDuration(candidate.startSeconds + candidate.durationSeconds)}
+        </div>
+        <span className="pill pill-plan" title="Explainable signal score">
+          {pct}% signal
+        </span>
+      </div>
+      <div className="clip-row-meta muted">
+        {candidate.reason}
+        {candidate.wasClipped && ' · clipped at source boundary'}
+        {' · '}
+        {candidate.signals.join(', ')}
+      </div>
+      <div className="btn-row" style={{ marginTop: 10 }}>
+        <button
+          className="btn btn-primary"
+          onClick={onAccept}
+          disabled={accepted}
+        >
+          {accepted ? '✓ Added' : '✂ Create clip from this'}
+        </button>
+      </div>
+    </li>
+  );
 }

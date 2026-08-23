@@ -67,16 +67,33 @@ capabilitiesRouter.get('/', (_req, res) => {
     {
       id: 'scene-detection',
       label: 'Scene / shot detection',
-      state: 'unavailable',
-      detail:
-        'OpenCV cannot load because libGL.so.1 is missing and apt is unavailable. Deferred rather than faked.',
+      state: ffmpeg.available ? 'implemented' : 'unavailable',
+      detail: ffmpeg.available
+        ? 'Real FFmpeg scene= filter; produces frame-level cut timestamps that power highlight suggestions.'
+        : 'Requires the imageio-ffmpeg binary.',
+    },
+    {
+      id: 'silence-detection',
+      label: 'Silence detection',
+      state: ffmpeg.available ? 'implemented' : 'unavailable',
+      detail: ffmpeg.available
+        ? 'FFmpeg silencedetect on the audio stream; used to find speech-resume points.'
+        : 'Requires the imageio-ffmpeg binary.',
+    },
+    {
+      id: 'highlight-suggestions',
+      label: 'Automatic highlight suggestions',
+      state: ffmpeg.available ? 'implemented' : 'unavailable',
+      detail: ffmpeg.available
+        ? 'Deterministic candidate-clip detection from scene changes and silence; no AI model is used.'
+        : 'Requires the imageio-ffmpeg binary.',
     },
     {
       id: 'highlight-ai',
       label: 'AI highlight detection & scoring',
       state: 'planned',
       detail:
-        'Depends on transcription. No heuristic score is shown, because an invented score would be a fake result.',
+        'Depends on transcription. No machine-learning score is shown, because an invented score would be a fake result.',
     },
     {
       id: 'captions',

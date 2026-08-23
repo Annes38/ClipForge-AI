@@ -29,6 +29,7 @@ import {
   startClipRender,
   isProjectRendering as projectHasActiveJob,
 } from '../jobs/render-queue.ts';
+import { detectHighlights } from '../media/highlight-detector.ts';
 import {
   isValidProjectId,
   isValidClipId,
@@ -66,6 +67,132 @@ clipsRouter.get('/projects/:id/clips', (req: Request, res: Response) => {
   }
   const clips = listClips(req.params.id);
   res.json({ clips: clips.map(clipToDto) });
+});
+
+/**
+ * GET /api/projects/:id/suggest-clips
+ *
+ * Runs the deterministic highlight detector on the project's source video
+ * and returns up to `max` (default 8) candidate segments. No AI is used;
+ * candidates come from real FFmpeg `scene=` and `silencedetect` signals.
+ *
+ * Optional query parameters:
+ *   max                1..20, default 8
+ *   minDuration        seconds, default 10
+ *   maxDuration        seconds, default 60
+ *   sceneThreshold     0..1, default 0.25
+ *   silenceDb          dB floor, default -30
+ *   silenceMin         seconds, default 0.5
+ */
+clipsRouter.get('/projects/:id/suggest-clips', async (req: Request, res: Response) => {
+  if (!isValidProjectId(req.params.id)) {
+    res.status(400).json({ error: 'Invalid project id.' });
+    return;
+  }
+  const project = getProject(req.params.id);
+  if (!project) {
+    res.status(404).json({ error: 'Project not found.' });
+    return;
+  }
+
+  const q = (req.query ?? {}) as Record<string, unknown>;
+  const maxCandidates = clampInt(q.max, 1, 20, 8);
+  const minDurationSeconds = clampNum(q.minDuration, 1, 600, 10);
+  const maxDurationSeconds = clampNum(q.maxDuration, 1, 600, 60);
+  const sceneThreshold = clampNum(q.sceneThreshold, 0, 1, 0.25);
+  const silenceDb = clampNum(q.silenceDb, -100, 0, -30);
+  const silenceMinSeconds = clampNum(q.silenceMin, 0.05, 5, 0.5);
+
+  if (minDurationSeconds >= maxDurationSeconds) {
+    res.status(400).json({ error: 'minDuration must be less than maxDuration.' });
+    return;
+  }
+
+  try {
+    const result = await detectHighlights(project.source_path, {
+      maxCandidates,
+      minDurationSeconds,
+      maxDurationSeconds,
+      sceneThreshold,
+      silenceDb,
+      silenceMinSeconds,
+    });
+    res.json(result);
+  } catch (err) {
+    if (err instanceof Error && err.name === 'HighlightDetectionError') {
+      res.status(400).json({ error: err.message });
+      return;
+    }
+    if ((err as { name?: string }).name === 'FfmpegUnavailableError') {
+      res.status(503).json({
+        error: 'Highlight detection requires FFmpeg, which is not installed.',
+      });
+      return;
+    }
+    res.status(500).json({ error: `Detection failed: ${(err as Error).message}` });
+  }
+});
+
+/**
+ * POST /api/projects/:id/clips/from-suggestion
+ *
+ * Convenience: turn a suggestion into a real clip. The body must include
+ * the suggestion fields (startSeconds, durationSeconds, score, reason,
+ * signals) plus a title and an aspect. The server re-validates the
+ * segment against the source just like the regular clip create path.
+ */
+clipsRouter.post('/projects/:id/clips/from-suggestion', (req: Request, res: Response) => {
+  if (!isValidProjectId(req.params.id)) {
+    res.status(400).json({ error: 'Invalid project id.' });
+    return;
+  }
+  const project = getProject(req.params.id);
+  if (!project) {
+    res.status(404).json({ error: 'Project not found.' });
+    return;
+  }
+
+  const validation = validateClipParams(req.body);
+  if (!validation.ok) {
+    res.status(400).json({ error: validation.error });
+    return;
+  }
+  const { title, startSeconds, durationSeconds, aspect } = validation.value;
+
+  const sourceDuration = project.media_json
+    ? safeParseMediaDuration(project.media_json)
+    : null;
+  const outOfRange = checkSegmentFitsSource(
+    startSeconds,
+    durationSeconds,
+    sourceDuration,
+  );
+  if (outOfRange) {
+    res.status(400).json({ error: outOfRange });
+    return;
+  }
+
+  if (projectHasActiveJob(req.params.id)) {
+    res.status(409).json({
+      error: 'This project is already processing another clip. Wait for it to finish.',
+    });
+    return;
+  }
+
+  const clip = createClip({
+    projectId: req.params.id,
+    title,
+    startSeconds,
+    durationSeconds,
+    aspect,
+  });
+
+  try {
+    const job = startClipRender({ clipId: clip.id });
+    res.status(201).json({ clip: clipToDto(clip), job: clipJobPayload(clip.id) ?? job });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
 });
 
 /** POST /api/projects/:id/clips */
@@ -284,4 +411,18 @@ function safeParseMediaDuration(json: string): number | null {
   } catch {
     return null;
   }
+}
+
+function clampInt(v: unknown, min: number, max: number, fallback: number): number {
+  if (typeof v === 'string' && v.trim() === '') return fallback;
+  const n = typeof v === 'number' ? v : Number(v);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.min(max, Math.trunc(n)));
+}
+
+function clampNum(v: unknown, min: number, max: number, fallback: number): number {
+  if (typeof v === 'string' && v.trim() === '') return fallback;
+  const n = typeof v === 'number' ? v : Number(v);
+  if (!Number.isFinite(n)) return fallback;
+  return Math.max(min, Math.min(max, n));
 }

@@ -10,6 +10,7 @@ import type {
   Job,
   Project,
   RenderJob,
+  SuggestClipsResponse,
 } from './types.ts';
 
 export class ApiError extends Error {
@@ -163,6 +164,50 @@ export async function renderClip(
 export async function deleteClip(clipId: string): Promise<void> {
   const res = await fetch(`/api/clips/${clipId}`, { method: 'DELETE' });
   if (!res.ok && res.status !== 204) await parse(res);
+}
+
+/* ----------------------------------------------------------------- */
+/*                       Highlight suggestions                        */
+/* ----------------------------------------------------------------- */
+
+export interface SuggestClipsParams {
+  max?: number;
+  minDuration?: number;
+  maxDuration?: number;
+  sceneThreshold?: number;
+  silenceDb?: number;
+  silenceMin?: number;
+}
+
+export async function suggestClips(
+  projectId: string,
+  params: SuggestClipsParams = {},
+): Promise<SuggestClipsResponse> {
+  const qs = new URLSearchParams();
+  for (const [k, v] of Object.entries(params)) {
+    if (v !== undefined && v !== null) qs.set(k, String(v));
+  }
+  const url = `/api/projects/${projectId}/suggest-clips${qs.toString() ? `?${qs}` : ''}`;
+  return parse<SuggestClipsResponse>(await fetch(url));
+}
+
+/** Create + render a clip from a highlight candidate in one call. */
+export async function createClipFromSuggestion(
+  projectId: string,
+  candidate: {
+    title: string;
+    startSeconds: number;
+    durationSeconds: number;
+    aspect: 'vertical' | 'source';
+  },
+): Promise<{ clip: Clip; job: RenderJob | null }> {
+  return parse<{ clip: Clip; job: RenderJob | null }>(
+    await fetch(`/api/projects/${projectId}/clips/from-suggestion`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(candidate),
+    }),
+  );
 }
 
 export const projectOutputUrl = (id: string) => `/api/projects/${id}/output`;

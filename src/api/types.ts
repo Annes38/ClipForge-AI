@@ -52,6 +52,22 @@ export interface Clip {
   updatedAt: string;
 }
 
+export interface HighlightCandidate {
+  startSeconds: number;
+  durationSeconds: number;
+  score: number;
+  reason: string;
+  signals: Array<'scene-change' | 'resume-from-silence'>;
+  wasClipped: boolean;
+}
+
+export interface SuggestClipsResponse {
+  source: MediaInfo;
+  candidates: HighlightCandidate[];
+  rawSceneChangeCount: number;
+  rawSilenceCount: number;
+}
+
 export interface Job {
   phase: 'preparing' | 'processing' | 'completed' | 'failed';
   progress: number | null;
