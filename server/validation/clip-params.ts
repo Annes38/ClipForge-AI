@@ -1,11 +1,11 @@
 /**
  * Server-side validation for clip parameters.
  *
- * The browser only sends start time, duration, aspect, and a title. The
- * server clamps and rejects explicitly — we never silently coerce bad input.
+ * The browser only sends start time, duration, aspect, reframe and a title.
+ * The server clamps and rejects explicitly — we never silently coerce bad input.
  */
-import type { AspectMode } from '../media/clip-renderer.ts';
-import { ALLOWED_CLIP_ASPECTS } from '../db/clips-repo.ts';
+import type { AspectMode, ReframeMode } from '../media/clip-renderer.ts';
+import { ALLOWED_CLIP_ASPECTS, ALLOWED_CLIP_REFRAMES } from '../db/clips-repo.ts';
 
 export const MAX_CLIP_TITLE_LENGTH = 80;
 export const MAX_CLIP_DURATION_SECONDS = 600;
@@ -16,6 +16,7 @@ export type ValidatedClipParams = {
   startSeconds: number;
   durationSeconds: number;
   aspect: AspectMode;
+  reframe: ReframeMode;
 };
 
 export type ValidationFailure = { ok: false; error: string };
@@ -26,10 +27,6 @@ function isFiniteNumber(v: unknown): v is number {
   return typeof v === 'number' && Number.isFinite(v);
 }
 
-/**
- * Reduce an arbitrary title to something safe to echo back to the user and
- * store in the database. Strips control characters and limits length.
- */
 function sanitizeTitle(input: unknown): string {
   if (typeof input !== 'string') return '';
   // eslint-disable-next-line no-control-regex
@@ -37,19 +34,6 @@ function sanitizeTitle(input: unknown): string {
   return cleaned.slice(0, MAX_CLIP_TITLE_LENGTH);
 }
 
-/**
- * Validate and normalise a clip creation request body.
- *
- * Rejects:
- *   - negative or non-finite start time
- *   - zero/negative duration
- *   - duration over MAX_CLIP_DURATION_SECONDS
- *   - aspect other than 'vertical' | 'source'
- *   - non-numeric values, NaN, Infinity
- *
- * Does NOT verify source duration — the caller (route handler) checks that
- * against the project's source media.
- */
 export function validateClipParams(body: unknown): ValidationResult {
   const obj =
     body && typeof body === 'object' ? (body as Record<string, unknown>) : {};
@@ -85,6 +69,19 @@ export function validateClipParams(body: unknown): ValidationResult {
     };
   }
 
+  // Reframe is optional and defaults to 'pad'. When present it must be one
+  // of the allowed values. It only takes effect when aspect === 'vertical'.
+  let reframe: ReframeMode = 'pad';
+  if (obj.reframe !== undefined && obj.reframe !== null && obj.reframe !== '') {
+    if (typeof obj.reframe !== 'string' || !ALLOWED_CLIP_REFRAMES.includes(obj.reframe as ReframeMode)) {
+      return {
+        ok: false,
+        error: `reframe must be one of: ${ALLOWED_CLIP_REFRAMES.join(', ')}.`,
+      };
+    }
+    reframe = obj.reframe as ReframeMode;
+  }
+
   return {
     ok: true,
     value: {
@@ -92,17 +89,11 @@ export function validateClipParams(body: unknown): ValidationResult {
       startSeconds: startRaw,
       durationSeconds: durationRaw,
       aspect: aspectRaw as AspectMode,
+      reframe,
     },
   };
 }
 
-/**
- * Ensure the requested segment fits inside the source video.
- *
- * Returns null on success, or an error message describing the failure.
- * If the source duration is unknown (null), no bound check is performed —
- * the renderer will clamp to whatever footage is available.
- */
 export function checkSegmentFitsSource(
   startSeconds: number,
   durationSeconds: number,

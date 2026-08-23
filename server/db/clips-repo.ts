@@ -9,11 +9,17 @@
 import { randomUUID } from 'node:crypto';
 import { getDb } from './database.ts';
 import type { MediaInfo } from '../media/inspect.ts';
-import type { AspectMode } from '../media/clip-renderer.ts';
+import type { AspectMode, ReframeMode } from '../media/clip-renderer.ts';
 
 export type ClipStatus = 'pending' | 'processing' | 'completed' | 'failed';
 
 export const ALLOWED_CLIP_ASPECTS: ReadonlyArray<AspectMode> = ['vertical', 'source'];
+export const ALLOWED_CLIP_REFRAMES: ReadonlyArray<ReframeMode> = [
+  'pad',
+  'crop-center',
+  'crop-top',
+  'crop-bottom',
+];
 
 export interface ClipRow {
   id: string;
@@ -22,6 +28,7 @@ export interface ClipRow {
   start_seconds: number;
   duration_seconds: number;
   aspect: string;
+  reframe: string;
   status: ClipStatus;
   output_path: string | null;
   error_message: string | null;
@@ -47,6 +54,7 @@ export interface ClipDto {
   startSeconds: number;
   durationSeconds: number;
   aspect: AspectMode;
+  reframe: ReframeMode;
   status: ClipStatus;
   errorMessage: string | null;
   media: MediaInfo | null;
@@ -73,6 +81,18 @@ function normalizeAspect(aspect: string): AspectMode {
   return aspect === 'source' ? 'source' : 'vertical';
 }
 
+function normalizeReframe(reframe: string): ReframeMode {
+  switch (reframe) {
+    case 'pad':
+    case 'crop-center':
+    case 'crop-top':
+    case 'crop-bottom':
+      return reframe;
+    default:
+      return 'pad';
+  }
+}
+
 function normalizeStatus(status: string): ClipStatus {
   switch (status) {
     case 'pending':
@@ -93,6 +113,7 @@ function rowToDto(row: ClipRow): ClipDto {
     startSeconds: row.start_seconds,
     durationSeconds: row.duration_seconds,
     aspect: normalizeAspect(row.aspect),
+    reframe: normalizeReframe(row.reframe ?? 'pad'),
     status: normalizeStatus(row.status),
     errorMessage: row.error_message,
     media: safeParse<MediaInfo>(row.media_json),
@@ -113,17 +134,19 @@ export interface CreateClipInput {
   startSeconds: number;
   durationSeconds: number;
   aspect: AspectMode;
+  reframe?: ReframeMode;
 }
 
 export function createClip(input: CreateClipInput): ClipRow {
   const db = getDb();
   const id = randomUUID();
   const ts = nowIso();
+  const reframe = input.reframe ?? 'pad';
   db.prepare(
     `INSERT INTO clips
-       (id, project_id, title, start_seconds, duration_seconds, aspect,
+       (id, project_id, title, start_seconds, duration_seconds, aspect, reframe,
         status, created_at, updated_at)
-     VALUES (?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
+     VALUES (?, ?, ?, ?, ?, ?, ?, 'pending', ?, ?)`,
   ).run(
     id,
     input.projectId,
@@ -131,6 +154,7 @@ export function createClip(input: CreateClipInput): ClipRow {
     input.startSeconds,
     input.durationSeconds,
     input.aspect,
+    reframe,
     ts,
     ts,
   );
@@ -188,6 +212,7 @@ export interface UpdateClipInput {
   startSeconds?: number;
   durationSeconds?: number;
   aspect?: AspectMode;
+  reframe?: ReframeMode;
 }
 
 export function updateClip(id: string, patch: UpdateClipInput): ClipRow {
@@ -199,19 +224,21 @@ export function updateClip(id: string, patch: UpdateClipInput): ClipRow {
     start_seconds: patch.startSeconds ?? current.start_seconds,
     duration_seconds: patch.durationSeconds ?? current.duration_seconds,
     aspect: patch.aspect ?? current.aspect,
+    reframe: patch.reframe ?? (current.reframe ?? 'pad'),
   };
   const reRender =
     next.start_seconds !== current.start_seconds ||
     next.duration_seconds !== current.duration_seconds ||
-    next.aspect !== current.aspect;
+    next.aspect !== current.aspect ||
+    next.reframe !== (current.reframe ?? 'pad');
   if (reRender) {
     db.prepare(
       `UPDATE clips
-         SET title = ?, start_seconds = ?, duration_seconds = ?, aspect = ?,
+         SET title = ?, start_seconds = ?, duration_seconds = ?, aspect = ?, reframe = ?,
              status = 'pending', output_path = NULL, output_json = NULL,
              error_message = NULL, media_json = NULL, updated_at = ?
        WHERE id = ?`,
-    ).run(next.title, next.start_seconds, next.duration_seconds, next.aspect, nowIso(), id);
+    ).run(next.title, next.start_seconds, next.duration_seconds, next.aspect, next.reframe, nowIso(), id);
   } else {
     db.prepare(
       `UPDATE clips

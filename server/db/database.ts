@@ -33,6 +33,7 @@ CREATE TABLE IF NOT EXISTS clips (
   start_seconds    REAL NOT NULL,
   duration_seconds REAL NOT NULL,
   aspect           TEXT NOT NULL,
+  reframe          TEXT NOT NULL DEFAULT 'pad',
   status           TEXT NOT NULL DEFAULT 'pending',
   output_path      TEXT,
   error_message    TEXT,

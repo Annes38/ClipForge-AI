@@ -132,6 +132,56 @@ test('accepts both allowed aspect values', () => {
   }
 });
 
+test('reframe is optional and defaults to pad', () => {
+  const v = validateClipParams({
+    title: 't',
+    startSeconds: 0,
+    durationSeconds: 1,
+    aspect: 'vertical',
+  });
+  assert.equal(v.ok, true);
+  if (v.ok) assert.equal(v.value.reframe, 'pad');
+});
+
+test('accepts all four reframe modes', () => {
+  for (const r of ['pad', 'crop-center', 'crop-top', 'crop-bottom']) {
+    const v = validateClipParams({
+      title: 't',
+      startSeconds: 0,
+      durationSeconds: 1,
+      aspect: 'vertical',
+      reframe: r,
+    });
+    assert.equal(v.ok, true, `expected pass for reframe=${r}`);
+    if (v.ok) assert.equal(v.value.reframe, r);
+  }
+});
+
+test('rejects an unknown reframe value', () => {
+  for (const r of ['smart', 'face', 'pad!', 'crop center', 42, true]) {
+    const v = validateClipParams({
+      title: 't',
+      startSeconds: 0,
+      durationSeconds: 1,
+      aspect: 'vertical',
+      reframe: r,
+    });
+    assert.equal(v.ok, false, `expected fail for reframe=${String(r)}`);
+  }
+});
+
+test('empty-string reframe falls back to the default (pad)', () => {
+  const v = validateClipParams({
+    title: 't',
+    startSeconds: 0,
+    durationSeconds: 1,
+    aspect: 'vertical',
+    reframe: '',
+  });
+  assert.equal(v.ok, true);
+  if (v.ok) assert.equal(v.value.reframe, 'pad');
+});
+
 test('checkSegmentFitsSource allows exact end equal to source duration (within tolerance)', () => {
   assert.equal(checkSegmentFitsSource(2, 3, 5), null);
   assert.equal(checkSegmentFitsSource(0, 5, 5), null);

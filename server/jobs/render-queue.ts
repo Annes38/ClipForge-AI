@@ -10,7 +10,7 @@
  * independent render. Multiple clips of the same project can be processed
  * sequentially — we don't fan them out concurrently in this phase.
  */
-import { renderClip, ClipRenderError, type AspectMode } from '../media/clip-renderer.ts';
+import { renderClip, ClipRenderError, type AspectMode, type ReframeMode } from '../media/clip-renderer.ts';
 import { FfmpegUnavailableError } from '../media/ffmpeg-locator.ts';
 import { getProject } from '../db/projects-repo.ts';
 import {
@@ -89,6 +89,7 @@ export function startClipRender(opts: StartClipRenderOptions): ClipJobState {
         startSeconds: clip.start_seconds,
         durationSeconds: clip.duration_seconds,
         aspect: clip.aspect as AspectMode,
+        reframe: (clip.reframe ?? 'pad') as ReframeMode,
         onProgress: (encodedSeconds) => {
           if (clip.duration_seconds > 0) {
             state.progress = Math.max(

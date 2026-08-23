@@ -158,7 +158,7 @@ clipsRouter.post('/projects/:id/clips/from-suggestion', (req: Request, res: Resp
     res.status(400).json({ error: validation.error });
     return;
   }
-  const { title, startSeconds, durationSeconds, aspect } = validation.value;
+  const { title, startSeconds, durationSeconds, aspect, reframe } = validation.value;
 
   const sourceDuration = project.media_json
     ? safeParseMediaDuration(project.media_json)
@@ -186,6 +186,7 @@ clipsRouter.post('/projects/:id/clips/from-suggestion', (req: Request, res: Resp
     startSeconds,
     durationSeconds,
     aspect,
+    reframe,
   });
 
   try {
@@ -213,7 +214,7 @@ clipsRouter.post('/projects/:id/clips', (req: Request, res: Response) => {
     res.status(400).json({ error: validation.error });
     return;
   }
-  const { title, startSeconds, durationSeconds, aspect } = validation.value;
+  const { title, startSeconds, durationSeconds, aspect, reframe } = validation.value;
 
   const sourceDuration = project.media_json
     ? safeParseMediaDuration(project.media_json)
@@ -241,6 +242,7 @@ clipsRouter.post('/projects/:id/clips', (req: Request, res: Response) => {
     startSeconds,
     durationSeconds,
     aspect,
+    reframe,
   });
 
   // Kick off the render immediately — that's the documented user flow.
@@ -342,7 +344,7 @@ clipsRouter.patch('/clips/:clipId', (req: Request, res: Response) => {
     res.status(400).json({ error: validation.error });
     return;
   }
-  const { title, startSeconds, durationSeconds, aspect } = validation.value;
+  const { title, startSeconds, durationSeconds, aspect, reframe } = validation.value;
 
   // Re-validate segment against the source.
   const sourceDuration = project.media_json
@@ -363,7 +365,8 @@ clipsRouter.patch('/clips/:clipId', (req: Request, res: Response) => {
   const renderParamChanged =
     clip.start_seconds !== startSeconds ||
     clip.duration_seconds !== durationSeconds ||
-    clip.aspect !== aspect;
+    clip.aspect !== aspect ||
+    (clip.reframe ?? 'pad') !== reframe;
   if (renderParamChanged && projectHasActiveJob(project.id)) {
     res.status(409).json({
       error:
@@ -377,6 +380,7 @@ clipsRouter.patch('/clips/:clipId', (req: Request, res: Response) => {
     startSeconds,
     durationSeconds,
     aspect,
+    reframe,
   });
 
   // If the user opted in to render, kick it off now.
@@ -425,6 +429,7 @@ clipsRouter.post('/clips/:clipId/duplicate', (req: Request, res: Response) => {
     startSeconds: clip.start_seconds,
     durationSeconds: clip.duration_seconds,
     aspect: clip.aspect as 'vertical' | 'source',
+    reframe: (clip.reframe ?? 'pad') as 'pad' | 'crop-center' | 'crop-top' | 'crop-bottom',
   });
   res.status(201).json({ clip: clipToDto(newClip) });
 });

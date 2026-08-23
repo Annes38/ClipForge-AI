@@ -43,6 +43,7 @@ export interface Clip {
   startSeconds: number;
   durationSeconds: number;
   aspect: 'vertical' | 'source';
+  reframe: 'pad' | 'crop-center' | 'crop-top' | 'crop-bottom';
   status: ClipStatus;
   errorMessage: string | null;
   media: MediaInfo | null;

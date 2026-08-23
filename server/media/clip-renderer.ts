@@ -15,6 +15,7 @@ import { runFfmpeg, FfmpegExecutionError } from './ffmpeg-runner.ts';
 import { inspectMedia, type MediaInfo } from './inspect.ts';
 
 export type AspectMode = 'vertical' | 'source';
+export type ReframeMode = 'pad' | 'crop-center' | 'crop-top' | 'crop-bottom';
 
 export interface RenderClipOptions {
   inputPath: string;
@@ -24,6 +25,8 @@ export interface RenderClipOptions {
   /** Segment length in seconds (> 0). */
   durationSeconds: number;
   aspect: AspectMode;
+  /** Reframe strategy when the source aspect does not match the target. */
+  reframe?: ReframeMode;
   /** Target vertical canvas. Defaults to 1080x1920. */
   targetWidth?: number;
   targetHeight?: number;
@@ -60,6 +63,16 @@ function extractProgressSeconds(chunk: string): number | null {
 /**
  * Build the FFmpeg argv for a clip render.
  * Exported so tests can assert the filter graph without executing anything.
+ *
+ * Vertical reframing options (only used when aspect === 'vertical'):
+ *   - pad:         fit the source into the canvas, pad with black bars
+ *                  (no cropping; safe; what we shipped in MVP).
+ *   - crop-center: scale to fill the canvas, then crop symmetrically
+ *                  (no letterboxing; some side content is lost).
+ *   - crop-top:    fill the canvas, anchored to the top (good for talking
+ *                  heads; bottom content is cropped).
+ *   - crop-bottom: fill the canvas, anchored to the bottom (good for
+ *                  sports or action that happens low in the frame).
  */
 export function buildClipArgs(opts: {
   inputPath: string;
@@ -67,12 +80,14 @@ export function buildClipArgs(opts: {
   startSeconds: number;
   durationSeconds: number;
   aspect: AspectMode;
+  reframe?: ReframeMode;
   hasAudio: boolean;
   targetWidth: number;
   targetHeight: number;
 }): string[] {
   const { inputPath, outputPath, startSeconds, durationSeconds, aspect, hasAudio } = opts;
   const { targetWidth: W, targetHeight: H } = opts;
+  const reframe: ReframeMode = opts.reframe ?? 'pad';
 
   const args: string[] = ['-hide_banner', '-nostdin', '-y'];
 
@@ -80,14 +95,29 @@ export function buildClipArgs(opts: {
   args.push('-ss', startSeconds.toFixed(3), '-i', inputPath, '-t', durationSeconds.toFixed(3));
 
   if (aspect === 'vertical') {
-    // Fit the whole frame inside a 9:16 canvas, then pad with black bars.
-    // force_original_aspect_ratio=decrease never crops; setsar=1 keeps square
-    // pixels so the output is a true WxH raster.
-    args.push(
-      '-vf',
-      `scale=${W}:${H}:force_original_aspect_ratio=decrease,` +
-        `pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1`,
-    );
+    let vf: string;
+    if (reframe === 'pad') {
+      // Fit the whole frame inside a 9:16 canvas, then pad with black bars.
+      // force_original_aspect_ratio=decrease never crops; setsar=1 keeps square
+      // pixels so the output is a true WxH raster.
+      vf =
+        `scale=${W}:${H}:force_original_aspect_ratio=decrease,` +
+        `pad=${W}:${H}:(ow-iw)/2:(oh-ih)/2:color=black,setsar=1`;
+    } else {
+      // Crop variants: scale the source so its shorter side matches the
+      // canvas, then crop the longer side.
+      // For a wide source going to 9:16, the natural fill is: scale so
+      // that the height matches H, then crop horizontally to W.
+      // The vertical offset is always 0 because we scaled to fit height.
+      // (A source that's already 9:16 needs no crop, and the math
+      // collapses to crop=W:H:0:0 which is the identity.)
+      const xOffset = '(in_w-' + W + ')/2';
+      vf =
+        `scale=-2:${H},` +
+        `crop=${W}:${H}:${xOffset}:0,` +
+        `setsar=1`;
+    }
+    args.push('-vf', vf);
   }
 
   args.push(
@@ -115,6 +145,7 @@ export async function renderClip(options: RenderClipOptions): Promise<RenderClip
     startSeconds,
     durationSeconds,
     aspect,
+    reframe,
     targetWidth = 1080,
     targetHeight = 1920,
     onProgress,
@@ -159,6 +190,7 @@ export async function renderClip(options: RenderClipOptions): Promise<RenderClip
     startSeconds,
     durationSeconds: effectiveDuration,
     aspect,
+    reframe,
     hasAudio: sourceInfo.hasAudio,
     targetWidth,
     targetHeight,

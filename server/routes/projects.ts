@@ -174,7 +174,7 @@ projectsRouter.post('/:id/process', (req: Request, res: Response) => {
     res.status(400).json({ error: validation.error });
     return;
   }
-  const { title, startSeconds, durationSeconds, aspect } = validation.value;
+  const { title, startSeconds, durationSeconds, aspect, reframe } = validation.value;
 
   const sourceDuration = project.media_json
     ? safeParseMediaDuration(project.media_json)
@@ -195,6 +195,7 @@ projectsRouter.post('/:id/process', (req: Request, res: Response) => {
     startSeconds,
     durationSeconds,
     aspect,
+    reframe,
   });
 
   try {

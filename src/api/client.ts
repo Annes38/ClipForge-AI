@@ -126,6 +126,7 @@ export interface CreateClipParams {
   startSeconds: number;
   durationSeconds: number;
   aspect: 'vertical' | 'source';
+  reframe?: 'pad' | 'crop-center' | 'crop-top' | 'crop-bottom';
 }
 
 export async function createClip(
@@ -166,6 +167,7 @@ export interface UpdateClipInput {
   startSeconds: number;
   durationSeconds: number;
   aspect: 'vertical' | 'source';
+  reframe?: 'pad' | 'crop-center' | 'crop-top' | 'crop-bottom';
 }
 
 export async function updateClip(

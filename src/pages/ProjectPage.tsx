@@ -59,6 +59,9 @@ export function ProjectPage({ projectId, onBack, onDeleted }: Props) {
   const [start, setStart] = useState(0);
   const [duration, setDuration] = useState(15);
   const [aspect, setAspect] = useState<AspectMode>('vertical');
+  const [reframe, setReframe] = useState<
+    'pad' | 'crop-center' | 'crop-top' | 'crop-bottom'
+  >('pad');
   const configured = useRef(false);
 
   const load = useCallback(async () => {
@@ -111,6 +114,7 @@ export function ProjectPage({ projectId, onBack, onDeleted }: Props) {
         startSeconds: start,
         durationSeconds: duration,
         aspect,
+        reframe,
       });
       setTitle('');
       await load();
@@ -156,6 +160,7 @@ export function ProjectPage({ projectId, onBack, onDeleted }: Props) {
       startSeconds: number;
       durationSeconds: number;
       aspect: 'vertical' | 'source';
+      reframe?: 'pad' | 'crop-center' | 'crop-top' | 'crop-bottom';
     },
     options: { render?: boolean } = {},
   ) {
@@ -431,6 +436,50 @@ export function ProjectPage({ projectId, onBack, onDeleted }: Props) {
           </div>
         </div>
 
+        {aspect === 'vertical' && (
+          <div className="field">
+            <span className="field-label">Reframe</span>
+            <div className="segmented">
+              <button
+                type="button"
+                aria-pressed={reframe === 'pad'}
+                onClick={() => setReframe('pad')}
+                disabled={projectInFlight}
+                title="Letterbox: fit the source inside the canvas with black bars"
+              >
+                Letterbox
+              </button>
+              <button
+                type="button"
+                aria-pressed={reframe === 'crop-center'}
+                onClick={() => setReframe('crop-center')}
+                disabled={projectInFlight}
+                title="Fill the canvas, cropping the sides symmetrically"
+              >
+                Crop center
+              </button>
+              <button
+                type="button"
+                aria-pressed={reframe === 'crop-top'}
+                onClick={() => setReframe('crop-top')}
+                disabled={projectInFlight}
+                title="Fill, anchored to the top of the source"
+              >
+                Crop top
+              </button>
+              <button
+                type="button"
+                aria-pressed={reframe === 'crop-bottom'}
+                onClick={() => setReframe('crop-bottom')}
+                disabled={projectInFlight}
+                title="Fill, anchored to the bottom of the source"
+              >
+                Crop bottom
+              </button>
+            </div>
+          </div>
+        )}
+
         <button
           className="btn btn-primary"
           onClick={() => void handleCreateClip()}
@@ -622,6 +671,7 @@ function ClipEditForm({
       startSeconds: number;
       durationSeconds: number;
       aspect: 'vertical' | 'source';
+      reframe: 'pad' | 'crop-center' | 'crop-top' | 'crop-bottom';
     },
     render: boolean,
   ) => void;
@@ -631,6 +681,9 @@ function ClipEditForm({
   const [start, setStart] = useState(clip.startSeconds);
   const [duration, setDuration] = useState(clip.durationSeconds);
   const [aspect, setAspect] = useState<'vertical' | 'source'>(clip.aspect);
+  const [reframe, setReframe] = useState<
+    'pad' | 'crop-center' | 'crop-top' | 'crop-bottom'
+  >(clip.reframe);
 
   const maxStart =
     sourceDuration !== null
@@ -649,7 +702,8 @@ function ClipEditForm({
   const renderParamChanged =
     start !== clip.startSeconds ||
     duration !== clip.durationSeconds ||
-    aspect !== clip.aspect;
+    aspect !== clip.aspect ||
+    reframe !== clip.reframe;
 
   return (
     <div className="card" style={{ marginTop: 10, background: 'var(--surface)' }}>
@@ -710,6 +764,42 @@ function ClipEditForm({
         </div>
       </div>
 
+      {aspect === 'vertical' && (
+        <div className="field">
+          <span className="field-label">Reframe</span>
+          <div className="segmented">
+            <button
+              type="button"
+              aria-pressed={reframe === 'pad'}
+              onClick={() => setReframe('pad')}
+            >
+              Letterbox
+            </button>
+            <button
+              type="button"
+              aria-pressed={reframe === 'crop-center'}
+              onClick={() => setReframe('crop-center')}
+            >
+              Crop center
+            </button>
+            <button
+              type="button"
+              aria-pressed={reframe === 'crop-top'}
+              onClick={() => setReframe('crop-top')}
+            >
+              Crop top
+            </button>
+            <button
+              type="button"
+              aria-pressed={reframe === 'crop-bottom'}
+              onClick={() => setReframe('crop-bottom')}
+            >
+              Crop bottom
+            </button>
+          </div>
+        </div>
+      )}
+
       {overflow && (
         <div className="alert alert-warn" style={{ marginBottom: 10 }}>
           End is past the source duration ({formatDuration(sourceDuration!)}).
@@ -722,7 +812,7 @@ function ClipEditForm({
       <div className="btn-row">
         <button
           className="btn btn-primary"
-          onClick={() => onSave({ title: title.trim(), startSeconds: start, durationSeconds: duration, aspect }, true)}
+          onClick={() => onSave({ title: title.trim(), startSeconds: start, durationSeconds: duration, aspect, reframe }, true)}
           disabled={invalid || projectInFlight}
         >
           {renderParamChanged ? 'Save & re-render' : 'Save title'}
