@@ -1,82 +1,106 @@
 /**
- * In-process render job tracker.
+ * In-process render job tracker for CLIPS.
  *
  * Progress reporting is REAL: it comes from FFmpeg's own `time=` output
  * divided by the clip duration we asked for. When we cannot compute a
  * meaningful ratio we report `null` and the UI shows an indeterminate state
  * rather than inventing a percentage.
+ *
+ * A job is keyed by clip id (not project id), because each clip is an
+ * independent render. Multiple clips of the same project can be processed
+ * sequentially — we don't fan them out concurrently in this phase.
  */
 import { renderClip, ClipRenderError, type AspectMode } from '../media/clip-renderer.ts';
 import { FfmpegUnavailableError } from '../media/ffmpeg-locator.ts';
-import { getProject, setStatus, setOutput } from '../db/projects-repo.ts';
-import { outputPathFor } from '../storage/paths.ts';
+import { getProject } from '../db/projects-repo.ts';
+import {
+  getClip,
+  setClipStatus,
+  setClipOutput,
+  setClipMedia,
+} from '../db/clips-repo.ts';
+import { clipOutputPathFor, isValidClipId } from '../storage/paths.ts';
 
-export interface JobState {
+export type JobPhase = 'preparing' | 'processing' | 'completed' | 'failed';
+
+export interface ClipJobState {
+  clipId: string;
   projectId: string;
-  phase: 'preparing' | 'processing' | 'completed' | 'failed';
+  phase: JobPhase;
   /** 0..1, or null when FFmpeg has not reported usable timing yet. */
   progress: number | null;
   message: string;
   detail?: string;
 }
 
-const jobs = new Map<string, JobState>();
+const jobs = new Map<string, ClipJobState>();
 
-export function getJob(projectId: string): JobState | null {
-  return jobs.get(projectId) ?? null;
+export function getClipJob(clipId: string): ClipJobState | null {
+  return jobs.get(clipId) ?? null;
 }
 
-export function isRunning(projectId: string): boolean {
-  const j = jobs.get(projectId);
+export function isClipRunning(clipId: string): boolean {
+  const j = jobs.get(clipId);
   return j?.phase === 'preparing' || j?.phase === 'processing';
 }
 
-export interface StartRenderOptions {
-  projectId: string;
-  startSeconds: number;
-  durationSeconds: number;
-  aspect: AspectMode;
+export interface StartClipRenderOptions {
+  clipId: string;
 }
 
-/** Kick off a render. Returns immediately; poll the project/job for status. */
-export function startRender(opts: StartRenderOptions): JobState {
-  const { projectId, startSeconds, durationSeconds, aspect } = opts;
+/** Kick off a render for an already-persisted clip. */
+export function startClipRender(opts: StartClipRenderOptions): ClipJobState {
+  const { clipId } = opts;
+  if (!isValidClipId(clipId)) {
+    throw new Error('Invalid clip id.');
+  }
+  const clip = getClip(clipId);
+  if (!clip) {
+    throw new Error('Clip not found.');
+  }
+  const project = getProject(clip.project_id);
+  if (!project) {
+    throw new Error('Project not found.');
+  }
 
-  const project = getProject(projectId);
-  if (!project) throw new Error('Project not found.');
-  if (isRunning(projectId)) return jobs.get(projectId)!;
+  if (isClipRunning(clipId)) return jobs.get(clipId)!;
 
-  const state: JobState = {
-    projectId,
+  const state: ClipJobState = {
+    clipId,
+    projectId: clip.project_id,
     phase: 'preparing',
     progress: null,
     message: 'Preparing render…',
   };
-  jobs.set(projectId, state);
-  setStatus(projectId, 'preparing');
+  jobs.set(clipId, state);
+  setClipStatus(clipId, 'pending');
 
-  const outputPath = outputPathFor(projectId);
+  const outputPath = clipOutputPathFor(clipId);
 
   void (async () => {
     try {
       state.phase = 'processing';
       state.message = 'Processing video…';
-      setStatus(projectId, 'processing');
+      setClipStatus(clipId, 'processing');
 
       const result = await renderClip({
         inputPath: project.source_path,
         outputPath,
-        startSeconds,
-        durationSeconds,
-        aspect,
+        startSeconds: clip.start_seconds,
+        durationSeconds: clip.duration_seconds,
+        aspect: clip.aspect as AspectMode,
         onProgress: (encodedSeconds) => {
-          if (durationSeconds > 0) {
-            state.progress = Math.max(0, Math.min(1, encodedSeconds / durationSeconds));
+          if (clip.duration_seconds > 0) {
+            state.progress = Math.max(
+              0,
+              Math.min(1, encodedSeconds / clip.duration_seconds),
+            );
           }
         },
       });
 
-      setOutput(projectId, result.outputPath, {
+      setClipMedia(clipId, result.info);
+      setClipOutput(clipId, result.outputPath, {
         width: result.info.width,
         height: result.info.height,
         durationSeconds: result.info.durationSeconds,
@@ -100,9 +124,29 @@ export function startRender(opts: StartRenderOptions): JobState {
       } else {
         state.message = `Unexpected processing error: ${(err as Error).message}`;
       }
-      setStatus(projectId, 'failed', state.message);
+      setClipStatus(clipId, 'failed', state.message);
     }
   })();
 
   return state;
+}
+
+/** Convenience for tests and the legacy bridge: project-level "is anything rendering". */
+export function isProjectRendering(projectId: string): boolean {
+  for (const j of jobs.values()) {
+    if (j.projectId === projectId && (j.phase === 'preparing' || j.phase === 'processing')) {
+      return true;
+    }
+  }
+  return false;
+}
+
+/** Job payload for a project, derived from any in-flight clip. */
+export function jobPayloadForProject(projectId: string): ClipJobState | null {
+  for (const j of jobs.values()) {
+    if (j.projectId !== projectId) continue;
+    if (j.phase !== 'preparing' && j.phase !== 'processing') continue;
+    return j;
+  }
+  return null;
 }

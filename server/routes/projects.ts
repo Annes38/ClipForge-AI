@@ -15,9 +15,18 @@ import {
   toDto,
   deleteProject,
 } from '../db/projects-repo.ts';
+import {
+  createClip,
+  listClips,
+  toDto as clipToDto,
+} from '../db/clips-repo.ts';
 import { inspectMedia, MediaInspectionError } from '../media/inspect.ts';
 import { FfmpegUnavailableError } from '../media/ffmpeg-locator.ts';
-import { startRender, getJob, isRunning } from '../jobs/render-queue.ts';
+import {
+  isClipRunning,
+  startClipRender,
+  jobPayloadForProject,
+} from '../jobs/render-queue.ts';
 import {
   isValidProjectId,
   hasAllowedVideoExtension,
@@ -26,6 +35,7 @@ import {
   uploadPathFor,
   downloadFilenameFor,
 } from '../storage/paths.ts';
+import { validateClipParams, checkSegmentFitsSource } from '../validation/clip-params.ts';
 
 export const projectsRouter = Router();
 
@@ -55,7 +65,7 @@ const upload = multer({
 });
 
 function jobPayload(projectId: string) {
-  const job = getJob(projectId);
+  const job = jobPayloadForProject(projectId);
   if (!job) return null;
   return {
     phase: job.phase,
@@ -81,7 +91,8 @@ projectsRouter.get('/:id', (req: Request, res: Response) => {
     res.status(404).json({ error: 'Project not found.' });
     return;
   }
-  res.json({ project: toDto(row), job: jobPayload(row.id) });
+  const clips = listClips(req.params.id).map(clipToDto);
+  res.json({ project: toDto(row), job: jobPayload(row.id), clips });
 });
 
 /**
@@ -135,7 +146,13 @@ projectsRouter.post('/', (req: Request, res: Response) => {
   });
 });
 
-/** POST /api/projects/:id/process  { startSeconds, durationSeconds, aspect } */
+/**
+ * POST /api/projects/:id/process  { startSeconds, durationSeconds, aspect, title? }
+ *
+ * Legacy bridge from the MVP. Creates a clip and starts rendering it, so
+ * clients that still call the old endpoint keep working while the new
+ * clip-based flow becomes available.
+ */
 projectsRouter.post('/:id/process', (req: Request, res: Response) => {
   const id = req.params.id;
   if (!isValidProjectId(id)) {
@@ -147,29 +164,49 @@ projectsRouter.post('/:id/process', (req: Request, res: Response) => {
     res.status(404).json({ error: 'Project not found.' });
     return;
   }
-  if (isRunning(id)) {
+  if (isProjectBusy(id)) {
     res.status(409).json({ error: 'This project is already being processed.' });
     return;
   }
 
-  const body = (req.body ?? {}) as Record<string, unknown>;
-  const startSeconds = Number(body.startSeconds ?? 0);
-  const durationSeconds = Number(body.durationSeconds ?? 15);
-  const aspect = body.aspect === 'source' ? 'source' : 'vertical';
+  const validation = validateClipParams(req.body);
+  if (!validation.ok) {
+    res.status(400).json({ error: validation.error });
+    return;
+  }
+  const { title, startSeconds, durationSeconds, aspect } = validation.value;
 
-  if (!Number.isFinite(startSeconds) || startSeconds < 0) {
-    res.status(400).json({ error: 'startSeconds must be a non-negative number.' });
+  const sourceDuration = project.media_json
+    ? safeParseMediaDuration(project.media_json)
+    : null;
+  const outOfRange = checkSegmentFitsSource(
+    startSeconds,
+    durationSeconds,
+    sourceDuration,
+  );
+  if (outOfRange) {
+    res.status(400).json({ error: outOfRange });
     return;
   }
-  if (!Number.isFinite(durationSeconds) || durationSeconds <= 0 || durationSeconds > 600) {
-    res.status(400).json({ error: 'durationSeconds must be between 0 and 600.' });
-    return;
-  }
+
+  const clip = createClip({
+    projectId: id,
+    title,
+    startSeconds,
+    durationSeconds,
+    aspect,
+  });
 
   try {
-    const job = startRender({ projectId: id, startSeconds, durationSeconds, aspect });
+    const job = startClipRender({ clipId: clip.id });
     res.status(202).json({
-      job: { phase: job.phase, progress: job.progress, message: job.message, detail: null },
+      clip: clipToDto(clip),
+      job: {
+        phase: job.phase,
+        progress: job.progress,
+        message: job.message,
+        detail: null,
+      },
     });
   } catch (err) {
     res.status(500).json({ error: (err as Error).message });
@@ -184,14 +221,26 @@ async function sendOutput(req: Request, res: Response, asAttachment: boolean): P
     return;
   }
   const project = getProject(id);
-  if (!project?.output_path) {
+  if (!project) {
+    res.status(404).json({ error: 'Project not found.' });
+    return;
+  }
+  // Prefer the project's own legacy output, but fall back to its most recent
+  // completed clip — this keeps the MVP preview/download working after
+  // migrations to the new clip-based model.
+  let outputPath = project.output_path;
+  if (!outputPath) {
+    const completed = listClips(id).find((c) => c.status === 'completed' && c.output_path);
+    outputPath = completed?.output_path ?? null;
+  }
+  if (!outputPath) {
     res.status(404).json({ error: 'No rendered clip is available for this project.' });
     return;
   }
 
   let size: number;
   try {
-    size = (await stat(project.output_path)).size;
+    size = (await stat(outputPath)).size;
   } catch {
     res.status(404).json({ error: 'The rendered clip is missing from disk.' });
     return;
@@ -220,16 +269,36 @@ async function sendOutput(req: Request, res: Response, asAttachment: boolean): P
     res.status(206);
     res.setHeader('Content-Range', `bytes ${start}-${safeEnd}/${size}`);
     res.setHeader('Content-Length', String(safeEnd - start + 1));
-    createReadStream(project.output_path, { start, end: safeEnd }).pipe(res);
+    createReadStream(outputPath, { start, end: safeEnd }).pipe(res);
     return;
   }
 
   res.setHeader('Content-Length', String(size));
-  createReadStream(project.output_path).pipe(res);
+  createReadStream(outputPath).pipe(res);
 }
 
 projectsRouter.get('/:id/output', (req, res) => void sendOutput(req, res, false));
 projectsRouter.get('/:id/download', (req, res) => void sendOutput(req, res, true));
+
+/* ----------------------------- helpers ----------------------------- */
+
+function safeParseMediaDuration(json: string): number | null {
+  try {
+    const parsed = JSON.parse(json) as { durationSeconds?: unknown };
+    const v = parsed?.durationSeconds;
+    if (typeof v === 'number' && Number.isFinite(v) && v >= 0) return v;
+    return null;
+  } catch {
+    return null;
+  }
+}
+
+function isProjectBusy(projectId: string): boolean {
+  for (const c of listClips(projectId)) {
+    if (isClipRunning(c.id)) return true;
+  }
+  return false;
+}
 
 /** DELETE /api/projects/:id — removes the record and its files. */
 projectsRouter.delete('/:id', async (req: Request, res: Response) => {
@@ -243,9 +312,13 @@ projectsRouter.delete('/:id', async (req: Request, res: Response) => {
     res.status(404).json({ error: 'Project not found.' });
     return;
   }
-  if (isRunning(id)) {
+  if (isProjectBusy(id)) {
     res.status(409).json({ error: 'Cannot delete a project while it is processing.' });
     return;
+  }
+  // Remove every clip's rendered output (the DB rows go via FK cascade).
+  for (const c of listClips(id)) {
+    if (c.output_path) await rm(c.output_path, { force: true }).catch(() => {});
   }
   await rm(project.source_path, { force: true }).catch(() => {});
   if (project.output_path) await rm(project.output_path, { force: true }).catch(() => {});

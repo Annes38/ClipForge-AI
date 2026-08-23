@@ -1,8 +1,9 @@
 # ClipForge AI
 
 An AI-assisted short-form video tool. This repository currently contains the
-**MVP foundation**: a real, working pipeline that takes a long video and
-produces a genuine vertical 9:16 MP4 clip you can preview and download.
+**MVP foundation** plus a real, working **multi-clip** backend: a project can
+hold any number of independent clips, each rendered from the same source video
+with its own start time, duration and aspect ratio.
 
 > **Honesty policy.** Everything described as working here has been executed and
 > verified against real video files. Features that cannot run in this
@@ -21,12 +22,12 @@ produces a genuine vertical 9:16 MP4 clip you can preview and download.
 | Real clip cutting | **Live** | Cuts a real segment, re-encodes to H.264/AAC |
 | 9:16 vertical reframing | **Live** | True 1080×1920 canvas, scale + pad, never stretched |
 | Audio preservation | **Live** | Kept when the source has audio; no fake silent track |
+| Multiple clips per project | **Live** | Independent metadata, status, preview, download, delete |
 | Preview & download | **Live** | HTTP range requests so the player can seek |
 | Transcription | **Unavailable** | Whisper weights cannot be downloaded (network/TLS blocked) |
 | Scene / shot detection | **Unavailable** | OpenCV cannot load `libGL.so.1`; `apt` unavailable |
 | AI highlight detection & scoring | **Planned** | Depends on transcription — no invented scores are shown |
 | Burned-in captions | **Planned** | Depends on transcription |
-| Multiple clips per project | **Planned** | Schema and renderer are structured for it |
 
 ---
 
@@ -96,9 +97,11 @@ server/
   db/
     database.ts             node:sqlite connection + schema
     projects-repo.ts        all SQL; row -> DTO mapping
-  jobs/render-queue.ts      render job state + real FFmpeg progress
+    clips-repo.ts           clips table (FK CASCADE from projects)
+  jobs/render-queue.ts      per-clip job state + real FFmpeg progress
   storage/paths.ts          traversal guards, filename sanitising
-  routes/                   projects.ts, capabilities.ts
+  validation/               clip parameter validation
+  routes/                   projects.ts, clips.ts, capabilities.ts
 
 src/
   api/                      client.ts (relative URLs), types.ts
@@ -112,8 +115,9 @@ src/
 
 ```
 upload → inspect (real decode) → create project (SQLite)
-       → configure clip (start / length / aspect)
+       → create clip (start / length / aspect / title)
        → render with FFmpeg → verify output → preview / download
+       → (a project can hold any number of independent clips)
 ```
 
 ---
@@ -140,7 +144,10 @@ upload → inspect (real decode) → create project (SQLite)
 
 Local SQLite via Node's built-in `node:sqlite`. No remote database, no Supabase,
 no API keys. The `projects` table stores id, name, source filename/path, output
-path, status, error message, media/output JSON and timestamps.
+path, status, error message, media/output JSON and timestamps. The `clips`
+table has its own id, project_id (FK → projects.id with ON DELETE CASCADE),
+title, start, duration, aspect, status, output path and metadata. A project
+can hold zero, one or many clips.
 
 Runtime state lives in `data/` (gitignored): `uploads/`, `outputs/`, `tmp/` and
 `clipforge.db`.
@@ -153,16 +160,18 @@ Runtime state lives in `data/` (gitignored): `uploads/`, `outputs/`, `tmp/` and
 npm test
 ```
 
-35 tests, including **real** video work — synthetic sources are encoded with the
+86 tests, including **real** video work — synthetic sources are encoded with the
 actual FFmpeg binary, rendered, then decoded again to verify the result. Tests
 never assume success from an exit code alone; they assert on the output file
 (existence, size, `ftyp` box, dimensions, duration, audio streams).
 
 Covered: 9:16 output is exactly 1080×1920 with audio preserved; silent sources
 produce video-only output; portrait sources are letterboxed not stretched;
-duration clamping; and failure handling for missing files, non-video files,
+duration clamping; failure handling for missing files, non-video files,
 audio-only files, out-of-range start times, invalid parameters and
-shell-metacharacter filenames.
+shell-metacharacter filenames; multi-clip creation, listing, deletion,
+validation, security (path traversal + shell metacharacter safety) and end-to-
+end rendering of multiple independent clips from the same source.
 
 ---
 
@@ -185,11 +194,18 @@ shell-metacharacter filenames.
 | `GET` | `/api/capabilities` | Real probed capabilities |
 | `GET` | `/api/projects` | List projects |
 | `POST` | `/api/projects` | Upload video (multipart `video`) |
-| `GET` | `/api/projects/:id` | Project + live job state |
-| `POST` | `/api/projects/:id/process` | Start a render |
-| `GET` | `/api/projects/:id/output` | Stream the clip (range supported) |
-| `GET` | `/api/projects/:id/download` | Download the clip |
-| `DELETE` | `/api/projects/:id` | Delete project and files |
+| `GET` | `/api/projects/:id` | Project + live job state + clips |
+| `POST` | `/api/projects/:id/process` | Legacy: create+render a clip in one call |
+| `GET` | `/api/projects/:id/output` | Stream the most recent clip (range) |
+| `GET` | `/api/projects/:id/download` | Download the most recent clip |
+| `DELETE` | `/api/projects/:id` | Delete project, all clips and files |
+| `GET` | `/api/projects/:id/clips` | List clips for a project |
+| `POST` | `/api/projects/:id/clips` | Create + start rendering a clip |
+| `GET` | `/api/clips/:clipId` | Single clip + live job state |
+| `POST` | `/api/clips/:clipId/render` | (Re)start a render for a clip |
+| `GET` | `/api/clips/:clipId/output` | Stream the clip (range supported) |
+| `GET` | `/api/clips/:clipId/download` | Download the clip |
+| `DELETE` | `/api/clips/:clipId` | Delete clip + output file |
 
 ---
 
@@ -200,8 +216,9 @@ shell-metacharacter filenames.
 2. **No scene detection.** OpenCV cannot load in this environment.
 3. **Clip selection is manual.** Automatic "viral moment" detection needs
    transcription first.
-4. **One clip per project**, replaced on re-render.
+4. **One FFmpeg render per project at a time.** Predictable resource use; new
+   renders queue behind the active one.
 5. **In-process job state.** Render progress is held in memory, so a server
-   restart mid-render loses progress (the project row still records the status).
+   restart mid-render loses progress (the clip row still records the status).
 6. **Vertical mode letterboxes** rather than smart-cropping; content-aware
    reframing requires subject tracking.

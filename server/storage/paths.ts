@@ -70,6 +70,35 @@ export function outputPathFor(projectId: string): string {
   return assertInside(OUTPUT_DIR, path.join(OUTPUT_DIR, `${projectId}.mp4`));
 }
 
+/**
+ * Clip ids are also UUIDs. We validate separately so the API can return a
+ * distinct "invalid clip id" error and so future format changes to clip
+ * identifiers don't accidentally loosen project id validation.
+ */
+const CLIP_UUID_RE = UUID_RE;
+
+export function isValidClipId(id: unknown): id is string {
+  return typeof id === 'string' && CLIP_UUID_RE.test(id);
+}
+
+/** Canonical on-disk location for a clip's rendered output. */
+export function clipOutputPathFor(clipId: string): string {
+  if (!isValidClipId(clipId)) throw new Error('Invalid clip id.');
+  return assertInside(OUTPUT_DIR, path.join(OUTPUT_DIR, `clip-${clipId}.mp4`));
+}
+
+/** Filename offered to the user when downloading a clip. */
+export function clipDownloadFilenameFor(title: string, clipId: string): string {
+  const slug =
+    sanitizeFilename(title)
+      .replace(/\.[^.]+$/, '')
+      .replace(/[^a-zA-Z0-9._-]+/g, '-')
+      .replace(/^-+|-+$/g, '')
+      .slice(0, 60) || 'clip';
+  const short = clipId.slice(0, 8);
+  return `${slug}-${short}-clipforge.mp4`;
+}
+
 /** Filename offered to the user on download. */
 export function downloadFilenameFor(projectName: string): string {
   const slug =

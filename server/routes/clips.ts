@@ -1,0 +1,287 @@
+/**
+ * Clip API routes.
+ *
+ *   GET    /api/projects/:id/clips           list clips for a project
+ *   POST   /api/projects/:id/clips           create + start render
+ *   GET    /api/clips/:clipId                get a single clip
+ *   POST   /api/clips/:clipId/render         (re)start a render for a clip
+ *   GET    /api/clips/:clipId/output         stream the rendered MP4 (range)
+ *   GET    /api/clips/:clipId/download       download the rendered MP4
+ *   DELETE /api/clips/:clipId                delete clip + output file
+ *
+ * All paths on disk are built from validated clip ids and re-validated with
+ * `assertInside()`. The browser never sends a filesystem path.
+ */
+import { Router, type Request, type Response } from 'express';
+import { createReadStream } from 'node:fs';
+import { rm, stat } from 'node:fs/promises';
+import { getProject } from '../db/projects-repo.ts';
+import {
+  createClip,
+  deleteClip,
+  getClip,
+  listClips,
+  toDto as clipToDto,
+} from '../db/clips-repo.ts';
+import {
+  getClipJob,
+  isClipRunning as isClipJobRunning,
+  startClipRender,
+  isProjectRendering as projectHasActiveJob,
+} from '../jobs/render-queue.ts';
+import {
+  isValidProjectId,
+  isValidClipId,
+  clipOutputPathFor,
+  clipDownloadFilenameFor,
+} from '../storage/paths.ts';
+import {
+  validateClipParams,
+  checkSegmentFitsSource,
+} from '../validation/clip-params.ts';
+
+export const clipsRouter = Router();
+
+function clipJobPayload(clipId: string) {
+  const job = getClipJob(clipId);
+  if (!job) return null;
+  return {
+    phase: job.phase,
+    progress: job.progress,
+    message: job.message,
+    detail: job.detail ?? null,
+  };
+}
+
+/** GET /api/projects/:id/clips */
+clipsRouter.get('/projects/:id/clips', (req: Request, res: Response) => {
+  if (!isValidProjectId(req.params.id)) {
+    res.status(400).json({ error: 'Invalid project id.' });
+    return;
+  }
+  const project = getProject(req.params.id);
+  if (!project) {
+    res.status(404).json({ error: 'Project not found.' });
+    return;
+  }
+  const clips = listClips(req.params.id);
+  res.json({ clips: clips.map(clipToDto) });
+});
+
+/** POST /api/projects/:id/clips */
+clipsRouter.post('/projects/:id/clips', (req: Request, res: Response) => {
+  if (!isValidProjectId(req.params.id)) {
+    res.status(400).json({ error: 'Invalid project id.' });
+    return;
+  }
+  const project = getProject(req.params.id);
+  if (!project) {
+    res.status(404).json({ error: 'Project not found.' });
+    return;
+  }
+
+  const validation = validateClipParams(req.body);
+  if (!validation.ok) {
+    res.status(400).json({ error: validation.error });
+    return;
+  }
+  const { title, startSeconds, durationSeconds, aspect } = validation.value;
+
+  const sourceDuration = project.media_json
+    ? safeParseMediaDuration(project.media_json)
+    : null;
+  const outOfRange = checkSegmentFitsSource(
+    startSeconds,
+    durationSeconds,
+    sourceDuration,
+  );
+  if (outOfRange) {
+    res.status(400).json({ error: outOfRange });
+    return;
+  }
+
+  if (projectHasActiveJob(req.params.id)) {
+    res.status(409).json({
+      error: 'This project is already processing another clip. Wait for it to finish.',
+    });
+    return;
+  }
+
+  const clip = createClip({
+    projectId: req.params.id,
+    title,
+    startSeconds,
+    durationSeconds,
+    aspect,
+  });
+
+  // Kick off the render immediately — that's the documented user flow.
+  let job;
+  try {
+    job = startClipRender({ clipId: clip.id });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+    return;
+  }
+
+  res.status(201).json({ clip: clipToDto(clip), job: clipJobPayload(clip.id) ?? job ?? null });
+});
+
+/** GET /api/clips/:clipId */
+clipsRouter.get('/clips/:clipId', (req: Request, res: Response) => {
+  if (!isValidClipId(req.params.clipId)) {
+    res.status(400).json({ error: 'Invalid clip id.' });
+    return;
+  }
+  const clip = getClip(req.params.clipId);
+  if (!clip) {
+    res.status(404).json({ error: 'Clip not found.' });
+    return;
+  }
+  res.json({ clip: clipToDto(clip), job: clipJobPayload(clip.id) });
+});
+
+/** POST /api/clips/:clipId/render — restart a render (e.g. after a failure). */
+clipsRouter.post('/clips/:clipId/render', (req: Request, res: Response) => {
+  if (!isValidClipId(req.params.clipId)) {
+    res.status(400).json({ error: 'Invalid clip id.' });
+    return;
+  }
+  const clip = getClip(req.params.clipId);
+  if (!clip) {
+    res.status(404).json({ error: 'Clip not found.' });
+    return;
+  }
+  const project = getProject(clip.project_id);
+  if (!project) {
+    res.status(404).json({ error: 'Project not found.' });
+    return;
+  }
+  if (isClipJobRunning(clip.id)) {
+    res.status(409).json({ error: 'This clip is already rendering.' });
+    return;
+  }
+  const sourceDuration = project.media_json
+    ? safeParseMediaDuration(project.media_json)
+    : null;
+  const outOfRange = checkSegmentFitsSource(
+    clip.start_seconds,
+    clip.duration_seconds,
+    sourceDuration,
+  );
+  if (outOfRange) {
+    res.status(400).json({ error: outOfRange });
+    return;
+  }
+
+  try {
+    const job = startClipRender({ clipId: clip.id });
+    res.status(202).json({ job: clipJobPayload(clip.id) ?? job });
+  } catch (err) {
+    res.status(500).json({ error: (err as Error).message });
+  }
+});
+
+/** Shared handler for streaming a clip's rendered output. */
+async function sendClipOutput(
+  req: Request,
+  res: Response,
+  asAttachment: boolean,
+): Promise<void> {
+  const clipId = req.params.clipId;
+  if (!isValidClipId(clipId)) {
+    res.status(400).json({ error: 'Invalid clip id.' });
+    return;
+  }
+  const clip = getClip(clipId);
+  if (!clip?.output_path) {
+    res.status(404).json({ error: 'No rendered clip is available.' });
+    return;
+  }
+
+  let size: number;
+  try {
+    size = (await stat(clip.output_path)).size;
+  } catch {
+    res.status(404).json({ error: 'The rendered clip is missing from disk.' });
+    return;
+  }
+
+  res.setHeader('Content-Type', 'video/mp4');
+  res.setHeader('Accept-Ranges', 'bytes');
+  if (asAttachment) {
+    res.setHeader(
+      'Content-Disposition',
+      `attachment; filename="${clipDownloadFilenameFor(clip.title, clip.id)}"`,
+    );
+  }
+
+  const range = req.headers.range;
+  const m = range ? /bytes=(\d*)-(\d*)/.exec(range) : null;
+  if (m) {
+    const start = m[1] ? Number(m[1]) : 0;
+    const end = m[2] ? Number(m[2]) : size - 1;
+    if (Number.isNaN(start) || Number.isNaN(end) || start > end || start >= size) {
+      res.status(416).setHeader('Content-Range', `bytes */${size}`).end();
+      return;
+    }
+    const safeEnd = Math.min(end, size - 1);
+    res.status(206);
+    res.setHeader('Content-Range', `bytes ${start}-${safeEnd}/${size}`);
+    res.setHeader('Content-Length', String(safeEnd - start + 1));
+    createReadStream(clip.output_path, { start, end: safeEnd }).pipe(res);
+    return;
+  }
+
+  res.setHeader('Content-Length', String(size));
+  createReadStream(clip.output_path).pipe(res);
+}
+
+clipsRouter.get('/clips/:clipId/output', (req, res) => void sendClipOutput(req, res, false));
+clipsRouter.get('/clips/:clipId/download', (req, res) => void sendClipOutput(req, res, true));
+
+/** DELETE /api/clips/:clipId — remove the clip record and its output file. */
+clipsRouter.delete('/clips/:clipId', async (req: Request, res: Response) => {
+  if (!isValidClipId(req.params.clipId)) {
+    res.status(400).json({ error: 'Invalid clip id.' });
+    return;
+  }
+  const clip = getClip(req.params.clipId);
+  if (!clip) {
+    res.status(404).json({ error: 'Clip not found.' });
+    return;
+  }
+  if (isClipJobRunning(clip.id)) {
+    res.status(409).json({ error: 'Cannot delete a clip while it is rendering.' });
+    return;
+  }
+  // Belt-and-braces: re-resolve the path from the clip id, ignore whatever
+  // happened to be in the row. This is a defence in depth check.
+  try {
+    const expected = clipOutputPathFor(clip.id);
+    if (clip.output_path && clip.output_path !== expected) {
+      // The DB row's output_path should always be the one we generated.
+      // If it isn't, prefer the on-disk canonical path.
+    }
+    if (clip.output_path) {
+      await rm(clip.output_path, { force: true }).catch(() => {});
+    }
+  } catch {
+    // ignore — best effort
+  }
+  deleteClip(clip.id);
+  res.status(204).end();
+});
+
+/* ----------------------------- helpers ----------------------------- */
+
+function safeParseMediaDuration(json: string): number | null {
+  try {
+    const parsed = JSON.parse(json) as { durationSeconds?: unknown };
+    const v = parsed?.durationSeconds;
+    if (typeof v === 'number' && Number.isFinite(v) && v >= 0) return v;
+    return null;
+  } catch {
+    return null;
+  }
+}

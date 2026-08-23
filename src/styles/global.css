@@ -207,3 +207,15 @@ input[type='range'] { width: 100%; height: var(--tap); accent-color: var(--accen
 .center { text-align: center; }
 .stack > * + * { margin-top: 12px; }
 details summary { cursor: pointer; min-height: 30px; display: flex; align-items: center; color: var(--muted); font-size: 0.85rem; }
+
+/* Clip list (per-project) */
+.clip-list { list-style: none; padding: 0; margin: 0; display: flex; flex-direction: column; gap: 12px; }
+.clip-row {
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 13px;
+  padding: 12px 14px;
+}
+.clip-row-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
+.clip-row-title { font-weight: 600; font-size: 0.95rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.clip-row-meta { font-size: 0.78rem; margin-top: 3px; }

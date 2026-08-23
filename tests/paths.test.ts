@@ -8,6 +8,9 @@ import {
   hasAllowedVideoExtension,
   isValidProjectId,
   downloadFilenameFor,
+  isValidClipId,
+  clipOutputPathFor,
+  clipDownloadFilenameFor,
 } from '../server/storage/paths.ts';
 
 test('assertInside allows paths within the root', () => {
@@ -67,4 +70,35 @@ test('deriveProjectName produces a readable title', () => {
 test('downloadFilenameFor produces a safe filename', () => {
   assert.equal(downloadFilenameFor('My Clip!'), 'My-Clip-clipforge.mp4');
   assert.equal(downloadFilenameFor('../../etc/passwd'), 'passwd-clipforge.mp4');
+});
+
+test('isValidClipId accepts UUIDs and rejects anything else', () => {
+  assert.equal(isValidClipId('3f0f5b1e-9a1e-4c2b-9f3a-7b1c2d3e4f5a'), true);
+  for (const bad of [
+    '../../etc',
+    'abc',
+    '',
+    null,
+    42,
+    '3f0f5b1e-9a1e-4c2b-9f3a-7b1c2d3e4f5', // too short
+    '3f0f5b1e-9a1e-4c2b-9f3a-7b1c2d3e4f5aa', // too long
+    '../../../clip.mp4',
+  ]) {
+    assert.equal(isValidClipId(bad), false, `expected reject for ${String(bad)}`);
+  }
+});
+
+test('clipOutputPathFor builds a path inside the output dir', () => {
+  const p = clipOutputPathFor('3f0f5b1e-9a1e-4c2b-9f3a-7b1c2d3e4f5a');
+  assert.match(p, /[\\/]clip-3f0f5b1e-9a1e-4c2b-9f3a-7b1c2d3e4f5a\.mp4$/);
+});
+
+test('clipOutputPathFor refuses non-UUID ids', () => {
+  assert.throws(() => clipOutputPathFor('not-a-uuid'), /Invalid clip id/);
+  assert.throws(() => clipOutputPathFor('../etc/passwd'), /Invalid clip id/);
+});
+
+test('clipDownloadFilenameFor produces a slugged filename', () => {
+  const fn = clipDownloadFilenameFor('My Clip!', '3f0f5b1e-9a1e-4c2b-9f3a-7b1c2d3e4f5a');
+  assert.match(fn, /^My-Clip-3f0f5b1e-clipforge\.mp4$/);
 });

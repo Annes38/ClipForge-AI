@@ -87,8 +87,10 @@ capabilitiesRouter.get('/', (_req, res) => {
     {
       id: 'multi-clip',
       label: 'Multiple clips per project',
-      state: 'planned',
-      detail: 'The schema and renderer are structured to allow this next.',
+      state: ffmpeg.available ? 'implemented' : 'unavailable',
+      detail: ffmpeg.available
+        ? 'Projects can hold any number of independent clips; each has its own metadata, status and rendered output.'
+        : 'Requires the imageio-ffmpeg binary.',
     },
   ];
 

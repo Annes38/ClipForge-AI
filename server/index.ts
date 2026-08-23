@@ -2,6 +2,7 @@ import express from 'express';
 import { API_PORT, ensureDirectories } from './config.ts';
 import { getDb } from './db/database.ts';
 import { projectsRouter } from './routes/projects.ts';
+import { clipsRouter } from './routes/clips.ts';
 import { capabilitiesRouter } from './routes/capabilities.ts';
 import { probeFfmpeg } from './media/ffmpeg-locator.ts';
 
@@ -15,6 +16,7 @@ export function createApp(): express.Express {
   app.get('/api/health', (_req, res) => res.json({ ok: true }));
   app.use('/api/capabilities', capabilitiesRouter);
   app.use('/api/projects', projectsRouter);
+  app.use('/api', clipsRouter);
 
   // JSON 404 for unknown API routes (avoids HTML error pages reaching fetch()).
   app.use('/api', (_req, res) => res.status(404).json({ error: 'Unknown API route.' }));

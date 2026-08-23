@@ -25,6 +25,24 @@ CREATE TABLE IF NOT EXISTS projects (
   updated_at     TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_projects_created_at ON projects(created_at DESC);
+
+CREATE TABLE IF NOT EXISTS clips (
+  id               TEXT PRIMARY KEY,
+  project_id       TEXT NOT NULL,
+  title            TEXT NOT NULL,
+  start_seconds    REAL NOT NULL,
+  duration_seconds REAL NOT NULL,
+  aspect           TEXT NOT NULL,
+  status           TEXT NOT NULL DEFAULT 'pending',
+  output_path      TEXT,
+  error_message    TEXT,
+  media_json       TEXT,
+  output_json      TEXT,
+  created_at       TEXT NOT NULL,
+  updated_at       TEXT NOT NULL,
+  FOREIGN KEY (project_id) REFERENCES projects(id) ON DELETE CASCADE
+);
+CREATE INDEX IF NOT EXISTS idx_clips_project_id ON clips(project_id, created_at DESC);
 `;
 
 export function getDb(dbPath: string = DB_PATH): DatabaseSync {

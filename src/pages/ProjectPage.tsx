@@ -1,15 +1,16 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import {
   fetchProject,
-  startProcessing,
+  createClip,
   deleteProject,
-  outputUrl,
-  downloadUrl,
+  deleteClip,
+  renderClip,
+  clipOutputUrl,
+  clipDownloadUrl,
   ApiError,
 } from '../api/client.ts';
-import type { AspectMode, Job, Project } from '../api/types.ts';
+import type { AspectMode, Clip, ClipStatus, Project } from '../api/types.ts';
 import { TopBar } from '../components/TopBar.tsx';
-import { StatusPill } from '../components/StatusPill.tsx';
 import { ProgressBar } from '../components/ProgressBar.tsx';
 import {
   formatBytes,
@@ -28,11 +29,13 @@ const POLL_MS = 1000;
 
 export function ProjectPage({ projectId, onBack, onDeleted }: Props) {
   const [project, setProject] = useState<Project | null>(null);
-  const [job, setJob] = useState<Job | null>(null);
+  const [clips, setClips] = useState<Clip[]>([]);
   const [error, setError] = useState<string | null>(null);
   const [loading, setLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
 
+  // Form state
+  const [title, setTitle] = useState('');
   const [start, setStart] = useState(0);
   const [duration, setDuration] = useState(15);
   const [aspect, setAspect] = useState<AspectMode>('vertical');
@@ -42,13 +45,15 @@ export function ProjectPage({ projectId, onBack, onDeleted }: Props) {
     try {
       const data = await fetchProject(projectId);
       setProject(data.project);
-      setJob(data.job);
+      setClips(data.clips ?? []);
       setError(null);
 
       // Seed the trim controls once, from the real source duration.
       if (!configured.current && data.project.media?.durationSeconds) {
         configured.current = true;
-        setDuration(Math.min(15, Math.max(1, Math.floor(data.project.media.durationSeconds))));
+        setDuration(
+          Math.min(15, Math.max(1, Math.floor(data.project.media.durationSeconds))),
+        );
       }
       return data;
     } catch (err) {
@@ -63,23 +68,31 @@ export function ProjectPage({ projectId, onBack, onDeleted }: Props) {
     void load();
   }, [load]);
 
-  // Poll only while work is actually in flight.
-  const active = project?.status === 'processing' || project?.status === 'preparing';
+  const anyInFlight = clips.some(
+    (c) => c.status === 'processing' || c.status === 'pending',
+  );
   useEffect(() => {
-    if (!active) return;
+    if (!anyInFlight) return;
     const t = setInterval(() => void load(), POLL_MS);
     return () => clearInterval(t);
-  }, [active, load]);
+  }, [anyInFlight, load]);
 
-  async function handleProcess() {
+  async function handleCreateClip() {
+    const trimmedTitle = title.trim();
+    if (!trimmedTitle) {
+      setError('Give the clip a name before rendering.');
+      return;
+    }
     setSubmitting(true);
     setError(null);
     try {
-      await startProcessing(projectId, {
+      await createClip(projectId, {
+        title: trimmedTitle,
         startSeconds: start,
         durationSeconds: duration,
         aspect,
       });
+      setTitle('');
       await load();
     } catch (err) {
       setError(err instanceof ApiError ? err.message : (err as Error).message);
@@ -88,8 +101,27 @@ export function ProjectPage({ projectId, onBack, onDeleted }: Props) {
     }
   }
 
-  async function handleDelete() {
-    if (!confirm('Delete this project and its files?')) return;
+  async function handleRetryClip(clipId: string) {
+    try {
+      await renderClip(clipId);
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : (err as Error).message);
+    }
+  }
+
+  async function handleDeleteClip(clipId: string) {
+    if (!confirm('Delete this clip and its rendered file?')) return;
+    try {
+      await deleteClip(clipId);
+      await load();
+    } catch (err) {
+      setError(err instanceof ApiError ? err.message : (err as Error).message);
+    }
+  }
+
+  async function handleDeleteProject() {
+    if (!confirm('Delete this project and all of its clips?')) return;
     try {
       await deleteProject(projectId);
       onDeleted();
@@ -125,20 +157,13 @@ export function ProjectPage({ projectId, onBack, onDeleted }: Props) {
   }
 
   const media = project.media;
-  const maxStart = media?.durationSeconds ? Math.max(0, Math.floor(media.durationSeconds) - 1) : 0;
-  const isDone = project.status === 'completed' && project.hasOutput;
-  const isFailed = project.status === 'failed';
+  const sourceDuration = media?.durationSeconds ?? null;
+  const maxStart = sourceDuration ? Math.max(0, Math.floor(sourceDuration) - 1) : 0;
+  const projectInFlight = anyInFlight;
 
   return (
     <>
       <TopBar onBack={onBack} title={project.name} />
-
-      <div style={{ display: 'flex', alignItems: 'center', gap: 10, marginBottom: 14 }}>
-        <StatusPill status={project.status} />
-        <span className="muted" style={{ overflow: 'hidden', textOverflow: 'ellipsis', whiteSpace: 'nowrap' }}>
-          {project.sourceFilename}
-        </span>
-      </div>
 
       {error && (
         <div className="alert alert-error">
@@ -147,76 +172,114 @@ export function ProjectPage({ projectId, onBack, onDeleted }: Props) {
         </div>
       )}
 
-      {isFailed && (
-        <div className="alert alert-error">
-          <strong>Processing failed</strong>
-          {project.errorMessage ?? job?.message ?? 'The render did not complete.'}
-          {job?.detail && <pre>{job.detail}</pre>}
+      {/* ---------------- Clips list ---------------- */}
+      <div className="card">
+        <div className="section-head">
+          <h2>Clips</h2>
+          {clips.length > 0 && <span className="muted">{clips.length}</span>}
         </div>
-      )}
-
-      {/* ---------------- Result ---------------- */}
-      {isDone && (
-        <div className="card">
-          <h2>Your clip</h2>
-          <div className="video-wrap">
-            {/* cache-busted so a re-render is never served from cache */}
-            <video src={`${outputUrl(project.id)}?v=${project.updatedAt}`} controls playsInline preload="metadata" />
-          </div>
-
-          <dl className="info-grid" style={{ marginTop: 14 }}>
-            <dt>Resolution</dt>
-            <dd>
-              {formatResolution(project.output?.width, project.output?.height)}
-              {project.output?.width && project.output?.height
-                ? ` (${describeAspect(project.output.width, project.output.height)})`
-                : ''}
-            </dd>
-            <dt>Duration</dt>
-            <dd>{formatDuration(project.output?.durationSeconds)}</dd>
-            <dt>File size</dt>
-            <dd>{formatBytes(project.output?.bytes)}</dd>
-            <dt>Audio</dt>
-            <dd>
-              {project.output?.audioPreserved
-                ? 'Preserved'
-                : media?.hasAudio === false
-                  ? 'None in source'
-                  : 'Not present'}
-            </dd>
-          </dl>
-
-          <div style={{ marginTop: 14 }} className="stack">
-            <a className="btn btn-primary" href={downloadUrl(project.id)} download>
-              ⬇ Download MP4
-            </a>
-            <div className="btn-row">
-              <button className="btn btn-secondary" onClick={onBack}>
-                Back to projects
-              </button>
-              <button
-                className="btn btn-ghost"
-                onClick={() => {
-                  setProject({ ...project, status: 'created' });
-                }}
-              >
-                New clip
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* ---------------- Progress ---------------- */}
-      {active && (
-        <div className="card">
-          <h2>{job?.phase === 'preparing' ? 'Preparing' : 'Processing'}</h2>
-          <ProgressBar value={job?.progress ?? null} label={job?.message ?? 'Working…'} />
-          <p className="muted" style={{ marginTop: 10 }}>
-            Encoding with FFmpeg. Progress is reported by the encoder itself.
+        {clips.length === 0 ? (
+          <p className="muted">
+            No clips yet. Use the form below to create your first one.
           </p>
+        ) : (
+          <ul className="clip-list">
+            {clips.map((c) => (
+              <ClipRow
+                key={c.id}
+                clip={c}
+                onRetry={() => void handleRetryClip(c.id)}
+                onDelete={() => void handleDeleteClip(c.id)}
+              />
+            ))}
+          </ul>
+        )}
+      </div>
+
+      {/* ---------------- Create a new clip ---------------- */}
+      <div className="card">
+        <h2>New clip</h2>
+
+        <label className="field">
+          <span className="field-label">Clip name</span>
+          <input
+            type="text"
+            value={title}
+            onChange={(e) => setTitle(e.target.value.slice(0, 80))}
+            placeholder="Hook, payoff, highlight…"
+            maxLength={80}
+            disabled={projectInFlight}
+          />
+        </label>
+
+        <label className="field">
+          <span className="field-label">Start at — {formatDuration(start)}</span>
+          <input
+            type="range"
+            min={0}
+            max={maxStart}
+            step={1}
+            value={Math.min(start, maxStart)}
+            onChange={(e) => setStart(Number(e.target.value))}
+            disabled={maxStart === 0 || projectInFlight}
+          />
+          {sourceDuration !== null && (
+            <p className="muted" style={{ marginTop: 4 }}>
+              Source duration: {formatDuration(sourceDuration)}
+            </p>
+          )}
+        </label>
+
+        <label className="field">
+          <span className="field-label">Clip length (seconds)</span>
+          <input
+            type="number"
+            min={1}
+            max={600}
+            value={duration}
+            onChange={(e) =>
+              setDuration(Math.max(1, Math.min(600, Number(e.target.value) || 1)))
+            }
+            inputMode="numeric"
+            disabled={projectInFlight}
+          />
+        </label>
+
+        <div className="field">
+          <span className="field-label">Format</span>
+          <div className="segmented">
+            <button
+              type="button"
+              aria-pressed={aspect === 'vertical'}
+              onClick={() => setAspect('vertical')}
+              disabled={projectInFlight}
+            >
+              9:16 Vertical
+            </button>
+            <button
+              type="button"
+              aria-pressed={aspect === 'source'}
+              onClick={() => setAspect('source')}
+              disabled={projectInFlight}
+            >
+              Keep original
+            </button>
+          </div>
         </div>
-      )}
+
+        <button
+          className="btn btn-primary"
+          onClick={() => void handleCreateClip()}
+          disabled={submitting || projectInFlight || !title.trim()}
+        >
+          {submitting ? 'Starting…' : '✂ Create clip'}
+        </button>
+        {projectInFlight && (
+          <p className="muted" style={{ marginTop: 8 }}>
+            A clip is already rendering. Wait for it to finish to create another.
+          </p>
+        )}
+      </div>
 
       {/* ---------------- Source info ---------------- */}
       <div className="card">
@@ -228,7 +291,9 @@ export function ProjectPage({ projectId, onBack, onDeleted }: Props) {
             <dt>Resolution</dt>
             <dd>
               {formatResolution(media.width, media.height)}
-              {media.width && media.height ? ` (${describeAspect(media.width, media.height)})` : ''}
+              {media.width && media.height
+                ? ` (${describeAspect(media.width, media.height)})`
+                : ''}
             </dd>
             <dt>Frame rate</dt>
             <dd>{media.frameRate ? `${media.frameRate} fps` : 'Unknown'}</dd>
@@ -244,71 +309,99 @@ export function ProjectPage({ projectId, onBack, onDeleted }: Props) {
         )}
       </div>
 
-      {/* ---------------- Clip settings ---------------- */}
-      {!active && !isDone && (
-        <div className="card">
-          <h2>Clip settings</h2>
-
-          <label className="field">
-            <span className="field-label">Start at — {formatDuration(start)}</span>
-            <input
-              type="range"
-              min={0}
-              max={maxStart}
-              step={1}
-              value={Math.min(start, maxStart)}
-              onChange={(e) => setStart(Number(e.target.value))}
-              disabled={maxStart === 0}
-            />
-          </label>
-
-          <label className="field">
-            <span className="field-label">Clip length (seconds)</span>
-            <input
-              type="number"
-              min={1}
-              max={600}
-              value={duration}
-              onChange={(e) => setDuration(Math.max(1, Math.min(600, Number(e.target.value) || 1)))}
-              inputMode="numeric"
-            />
-          </label>
-
-          <div className="field">
-            <span className="field-label">Format</span>
-            <div className="segmented">
-              <button
-                type="button"
-                aria-pressed={aspect === 'vertical'}
-                onClick={() => setAspect('vertical')}
-              >
-                9:16 Vertical
-              </button>
-              <button
-                type="button"
-                aria-pressed={aspect === 'source'}
-                onClick={() => setAspect('source')}
-              >
-                Keep original
-              </button>
-            </div>
-          </div>
-
-          <button className="btn btn-primary" onClick={handleProcess} disabled={submitting}>
-            {submitting ? 'Starting…' : '✂ Create clip'}
-          </button>
-        </div>
-      )}
-
-      {isFailed && !active && (
-        <button className="btn btn-secondary" onClick={handleProcess} disabled={submitting}>
-          Try again
-        </button>
-      )}
-
-      <button className="btn btn-danger" onClick={handleDelete} style={{ marginTop: 10 }}>
+      <button
+        className="btn btn-danger"
+        onClick={() => void handleDeleteProject()}
+        style={{ marginTop: 10 }}
+        disabled={projectInFlight}
+      >
         Delete project
       </button>
     </>
   );
+}
+
+function ClipRow({
+  clip,
+  onRetry,
+  onDelete,
+}: {
+  clip: Clip;
+  onRetry: () => void;
+  onDelete: () => void;
+}) {
+  const isPending = clip.status === 'pending' || clip.status === 'processing';
+  const isFailed = clip.status === 'failed';
+  const isDone = clip.status === 'completed' && clip.hasOutput;
+  return (
+    <li className="clip-row">
+      <div className="clip-row-head">
+        <div className="clip-row-title">{clip.title}</div>
+        <ClipStatusPill status={clip.status} />
+      </div>
+      <div className="clip-row-meta muted">
+        {formatDuration(clip.startSeconds)} · {formatDuration(clip.durationSeconds)} ·{' '}
+        {clip.aspect === 'vertical' ? '9:16' : 'Source'} ·{' '}
+        {clip.output
+          ? `${formatResolution(clip.output.width, clip.output.height)} · ${formatBytes(
+              clip.output.bytes,
+            )} · ${formatDuration(clip.output.durationSeconds)}`
+          : 'Not rendered yet'}
+      </div>
+
+      {clip.errorMessage && (
+        <div className="alert alert-error" style={{ marginTop: 8 }}>
+          <strong>Render failed</strong>
+          {clip.errorMessage}
+        </div>
+      )}
+
+      {isPending && (
+        <ProgressBar value={null} label={`Rendering — ${clip.status}`} />
+      )}
+
+      {isDone && (
+        <div className="video-wrap" style={{ marginTop: 10 }}>
+          {/* cache-busted so a re-render is never served from cache */}
+          <video
+            src={`${clipOutputUrl(clip.id)}?v=${clip.updatedAt}`}
+            controls
+            playsInline
+            preload="metadata"
+          />
+        </div>
+      )}
+
+      <div className="btn-row" style={{ marginTop: 10 }}>
+        {isDone && (
+          <a className="btn btn-primary" href={clipDownloadUrl(clip.id)} download>
+            ⬇ Download
+          </a>
+        )}
+        {isFailed && (
+          <button className="btn btn-secondary" onClick={onRetry}>
+            Try again
+          </button>
+        )}
+        <button
+          className="btn btn-ghost"
+          onClick={onDelete}
+          disabled={isPending}
+        >
+          Delete
+        </button>
+      </div>
+    </li>
+  );
+}
+
+function ClipStatusPill({ status }: { status: ClipStatus }) {
+  const map: Record<ClipStatus, { label: string; cls: string }> = {
+    pending: { label: 'Queued', cls: 'pill pill-run' },
+    processing: { label: 'Rendering', cls: 'pill pill-run' },
+    completed: { label: 'Ready', cls: 'pill pill-ok' },
+    failed: { label: 'Failed', cls: 'pill pill-err' },
+  };
+  const { label, cls } = map[status];
+  return <span className={cls}>{label}</span>;
 }
