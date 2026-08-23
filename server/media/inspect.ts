@@ -83,8 +83,8 @@ export function parseFfmpegBanner(stderr: string): MediaInfo {
     height: resolution?.height ?? null,
     hasVideo: videoLine !== null,
     hasAudio: audioLine !== null,
-    videoCodec: videoLine ? (/Video:\s*([A-Za-z0-9_.\-]+)/.exec(videoLine)?.[1] ?? null) : null,
-    audioCodec: audioLine ? (/Audio:\s*([A-Za-z0-9_.\-]+)/.exec(audioLine)?.[1] ?? null) : null,
+    videoCodec: videoLine ? (/Video:\s*([A-Za-z0-9_.-]+)/.exec(videoLine)?.[1] ?? null) : null,
+    audioCodec: audioLine ? (/Audio:\s*([A-Za-z0-9_.-]+)/.exec(audioLine)?.[1] ?? null) : null,
     formatName: formatMatch?.[1]?.trim() ?? null,
     frameRate: videoLine ? parseFrameRate(videoLine) : null,
   };
