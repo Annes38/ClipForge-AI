@@ -545,6 +545,7 @@ function SuggestionRow({
   onAccept: () => void;
 }) {
   const pct = Math.round(candidate.score * 100);
+  const b = candidate.signalBreakdown;
   return (
     <li className="clip-row">
       <div className="clip-row-head">
@@ -559,8 +560,14 @@ function SuggestionRow({
       <div className="clip-row-meta muted">
         {candidate.reason}
         {candidate.wasClipped && ' · clipped at source boundary'}
-        {' · '}
-        {candidate.signals.join(', ')}
+      </div>
+      <div className="signal-grid">
+        <SignalBar label="Scene change" value={b.sceneChange} />
+        <SignalBar label="Speech resumed" value={b.resumeFromSilence} />
+        <SignalBar label="Audio activity" value={b.audioActivity} />
+        <SignalBar label="Visual variance" value={b.visualVariance} />
+        <SignalBar label="Duration fit" value={b.durationFit} />
+        <SignalBar label="Position" value={b.position} />
       </div>
       <div className="btn-row" style={{ marginTop: 10 }}>
         <button
@@ -572,5 +579,18 @@ function SuggestionRow({
         </button>
       </div>
     </li>
+  );
+}
+
+function SignalBar({ label, value }: { label: string; value: number }) {
+  const pct = Math.round(Math.max(0, Math.min(1, value)) * 100);
+  return (
+    <div className="signal-bar">
+      <div className="signal-bar-label">{label}</div>
+      <div className="signal-bar-track" aria-hidden="true">
+        <div className="signal-bar-fill" style={{ width: `${pct}%` }} />
+      </div>
+      <div className="signal-bar-value">{pct}%</div>
+    </div>
   );
 }

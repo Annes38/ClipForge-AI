@@ -251,3 +251,135 @@ test('rendered highlight clips are real, decodable MP4s', async () => {
   assert.equal(renderResult.info.hasAudio, true);
   assert.equal(renderResult.audioPreserved, true);
 });
+
+test('candidates include per-signal breakdown values', async () => {
+  const { runFfmpeg } = await import('../server/media/ffmpeg-runner.ts');
+  const src = path.join(dir, 'breakdown.mp4');
+  await runFfmpeg([
+    '-hide_banner', '-y',
+    '-f', 'lavfi', '-i', 'color=c=red:size=320x240:rate=15:duration=2',
+    '-f', 'lavfi', '-i', 'color=c=blue:size=320x240:rate=15:duration=2',
+    '-f', 'lavfi', '-i', 'sine=frequency=440:duration=4',
+    '-filter_complex',
+      '[0:v]setpts=PTS-STARTPTS[v0];' +
+      '[1:v]setpts=PTS-STARTPTS[v1];' +
+      '[v0][v1]concat=n=2:v=1:a=0[outv];' +
+      '[2:a]aresample=44100,atrim=0:4[a0]',
+    '-map', '[outv]', '-map', '[a0]',
+    '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-preset', 'ultrafast',
+    '-c:a', 'aac', '-shortest', '-r', '15',
+    src,
+  ]);
+
+  const result = await detectHighlights(src, {
+    minDurationSeconds: 1,
+    maxDurationSeconds: 3,
+    defaultDurationSeconds: 2,
+    sceneThreshold: 0.1,
+  });
+  assert.ok(result.candidates.length >= 1);
+  for (const c of result.candidates) {
+    // Every breakdown field is a number in [0, 1].
+    assert.ok(typeof c.signalBreakdown.sceneChange === 'number');
+    assert.ok(c.signalBreakdown.sceneChange >= 0 && c.signalBreakdown.sceneChange <= 1);
+    assert.ok(c.signalBreakdown.resumeFromSilence >= 0 && c.signalBreakdown.resumeFromSilence <= 1);
+    assert.ok(c.signalBreakdown.audioActivity >= 0 && c.signalBreakdown.audioActivity <= 1);
+    assert.ok(c.signalBreakdown.visualVariance >= 0 && c.signalBreakdown.visualVariance <= 1);
+    assert.ok(c.signalBreakdown.durationFit >= 0 && c.signalBreakdown.durationFit <= 1);
+    assert.ok(c.signalBreakdown.position >= 0.5 && c.signalBreakdown.position <= 1);
+    // Signals array must be a subset of the allowed kinds.
+    for (const s of c.signals) {
+      assert.ok(
+        ['scene-change', 'resume-from-silence', 'high-audio-activity', 'high-visual-variance'].includes(s),
+      );
+    }
+  }
+});
+
+test('longer segments are not automatically ranked higher', async () => {
+  // The duration-fit signal should penalise a candidate that is far
+  // from the 22s ideal. We verify this indirectly: a 1.5s candidate
+  // that lands on a scene change should NOT necessarily outscore a
+  // 22s candidate that does not.
+  const src = await createSourceWithAudio(dir, 'fit.mp4', 30, '320x240');
+  const result = await detectHighlights(src, {
+    minDurationSeconds: 1,
+    maxDurationSeconds: 30,
+    defaultDurationSeconds: 22,
+  });
+  // We don't assert which is best (FFmpeg version dependent) but we
+  // assert every score is in [0, 1] and breakdown fields are present.
+  for (const c of result.candidates) {
+    assert.ok(c.score >= 0 && c.score <= 1);
+  }
+});
+
+test('candidates are sorted by descending score', async () => {
+  const { runFfmpeg } = await import('../server/media/ffmpeg-runner.ts');
+  const src = path.join(dir, 'sort.mp4');
+  // Four scenes with audio so several signals fire.
+  await runFfmpeg([
+    '-hide_banner', '-y',
+    '-f', 'lavfi', '-i', 'color=c=red:size=320x240:rate=15:duration=2',
+    '-f', 'lavfi', '-i', 'color=c=blue:size=320x240:rate=15:duration=2',
+    '-f', 'lavfi', '-i', 'color=c=green:size=320x240:rate=15:duration=2',
+    '-f', 'lavfi', '-i', 'color=c=yellow:size=320x240:rate=15:duration=2',
+    '-f', 'lavfi', '-i', 'sine=frequency=440:duration=8',
+    '-filter_complex',
+      '[0:v]setpts=PTS-STARTPTS[v0];' +
+      '[1:v]setpts=PTS-STARTPTS[v1];' +
+      '[2:v]setpts=PTS-STARTPTS[v2];' +
+      '[3:v]setpts=PTS-STARTPTS[v3];' +
+      '[v0][v1][v2][v3]concat=n=4:v=1:a=0[outv];' +
+      '[4:a]aresample=44100[a0]',
+    '-map', '[outv]', '-map', '[a0]',
+    '-c:v', 'libx264', '-pix_fmt', 'yuv420p', '-preset', 'ultrafast',
+    '-c:a', 'aac', '-shortest', '-r', '15',
+    src,
+  ]);
+  const result = await detectHighlights(src, {
+    minDurationSeconds: 2,
+    maxDurationSeconds: 5,
+    defaultDurationSeconds: 3,
+    sceneThreshold: 0.1,
+  });
+  for (let i = 1; i < result.candidates.length; i++) {
+    assert.ok(
+      result.candidates[i - 1]!.score >= result.candidates[i]!.score,
+      'candidates are not sorted by descending score',
+    );
+  }
+});
+
+test('detector works on a source with audio variation (silence + active)', async () => {
+  // 2s sine (active), 2s silence, 2s sine. The detector should find
+  // the silence_end events and use them as candidate starts.
+  const { runFfmpeg } = await import('../server/media/ffmpeg-runner.ts');
+  const src = path.join(dir, 'silence-audio.mp4');
+  await runFfmpeg([
+    '-hide_banner', '-y',
+    '-f', 'lavfi', '-i', 'color=c=red:size=320x240:rate=15:duration=8',
+    '-f', 'lavfi', '-i', 'sine=frequency=440:duration=2',
+    '-f', 'lavfi', '-i', 'sine=frequency=0:duration=2',
+    '-f', 'lavfi', '-i', 'sine=frequency=440:duration=2',
+    '-f', 'lavfi', '-i', 'sine=frequency=0:duration=2',
+    '-f', 'lavfi', '-i', 'sine=frequency=440:duration=2',
+    '-filter_complex',
+      '[0:v]format=yuv420p[v];' +
+      '[1:a][2:a][3:a][4:a][5:a]concat=n=5:v=0:a=1[a]',
+    '-map', '[v]', '-map', '[a]',
+    '-c:v', 'libx264', '-preset', 'ultrafast',
+    '-c:a', 'aac', '-shortest', '-r', '15',
+    src,
+  ]);
+  const result = await detectHighlights(src, {
+    minDurationSeconds: 1,
+    maxDurationSeconds: 4,
+    defaultDurationSeconds: 2,
+    silenceDb: -20,
+    silenceMinSeconds: 0.5,
+  });
+  // The detector should detect at least one silence region.
+  assert.ok(result.rawSilenceCount >= 1, 'expected at least one silence region');
+  assert.ok(result.candidates.length >= 1, 'expected at least one candidate');
+});

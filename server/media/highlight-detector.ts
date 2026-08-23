@@ -3,28 +3,38 @@
  *
  * AUDIT CONSTRAINT: this module does NOT use any machine-learning model and
  * does NOT call any paid API. It runs the verified imageio-ffmpeg binary
- * with two real signal-producing filters and parses the output:
+ * with several real signal-producing filters and parses the output:
  *
  *   1. `select='gt(scene,SCENE_THRESHOLD)',showinfo`
  *      - emits one line per "key frame" that is materially different from
  *        the previous frame (real scene-cut detection in the demuxer).
+ *      - showinfo also reports the per-frame mean/stdev, which we use to
+ *        measure VISUAL STABILITY (low stdev over time = stable, possibly
+ *        boring; high stdev = dynamic, possibly interesting).
  *   2. `silencedetect=noise=SILENCE_DB:d=SILENCE_MIN`
  *      - emits silence_start / silence_end lines on the audio stream.
+ *   3. `astats=metadata=1:reset=1,ametadata=print:key=lavfi.astats.Overall.RMS_level`
+ *      - emits per-frame audio RMS levels, which we average to score
+ *        AUDIO ACTIVITY in each window.
  *
  * From these signals we build candidate segments. The algorithm is:
  *
- *   - Each scene change is a candidate START point (these are natural
- *     "hooks" — something visually new just happened).
+ *   - Each scene change is a candidate START point (natural "hooks" —
+ *     something visually new just happened).
  *   - Each end-of-silence is also a candidate START point (the speaker
  *     just resumed, which is usually more interesting than the silence).
  *   - Each candidate is trimmed to [minDur, maxDur] and clipped to the
  *     source duration.
  *   - Adjacent candidates within MERGE_GAP of each other are merged, so
  *     we don't propose three overlapping clips.
- *   - Each candidate gets a SCORE that is explainable: bonus for scene
- *     changes inside the window, bonus for resume-from-silence inside
- *     the window, penalty for clipping (a clipped candidate is probably
- *     less interesting because we lost its tail).
+ *   - Each candidate gets an explainable SCORE that combines:
+ *       - scene-change density inside the window
+ *       - resume-from-silence density inside the window
+ *       - audio activity (RMS level mean, normalised)
+ *       - visual stability (per-frame stdev of luma/chroma channels)
+ *       - segment length penalty (too short or too long is worse)
+ *       - position score (slight preference for the first half of the source)
+ *       - clipping penalty (a clipped candidate lost its tail)
  *
  * Every returned candidate is a real portion of the source video — the
  * `startSeconds` and `durationSeconds` come straight from the parse,
@@ -64,8 +74,24 @@ export interface HighlightCandidate {
   score: number;
   /** Human-readable reason, e.g. "scene change", "speech resumed". */
   reason: string;
-  /** Which signals contributed to this candidate. */
-  signals: Array<'scene-change' | 'resume-from-silence'>;
+  /**
+   * Which signal categories contributed to this candidate.
+   */
+  signals: Array<
+    | 'scene-change'
+    | 'resume-from-silence'
+    | 'high-audio-activity'
+    | 'high-visual-variance'
+  >;
+  /** Per-signal contribution in [0, 1]. Keys match the `signals` array. */
+  signalBreakdown: {
+    sceneChange: number;
+    resumeFromSilence: number;
+    audioActivity: number;
+    visualVariance: number;
+    durationFit: number;
+    position: number;
+  };
   /** Whether the segment was clipped at the source boundary. */
   wasClipped: boolean;
 }
@@ -94,6 +120,19 @@ function parseShowinfoPtsTime(line: string): number | null {
   return m ? Number(m[1]) : null;
 }
 
+/**
+ * Extract per-frame stdev values from a showinfo line. Example:
+ *   "stdev:[0.0 0.0 0.0]" or "stdev:[12.5 9.0 6.3]"
+ * Returns the mean of the three channels (a rough "visual activity" metric).
+ */
+function parseShowinfoStdevMean(line: string): number | null {
+  const m = /stdev:\[\s*([^\]]+)\s*\]/.exec(line);
+  if (!m) return null;
+  const parts = m[1]!.split(/\s+/).map(Number);
+  if (parts.length === 0 || parts.some((n) => !Number.isFinite(n))) return null;
+  return parts.reduce((a, b) => a + b, 0) / parts.length;
+}
+
 /** "[silencedetect ...] silence_end: 4.000363 | silence_duration: 2.00068" -> {end, duration} */
 function parseSilenceEnd(line: string): { end: number; duration: number } | null {
   const endM = /silence_end:\s*(-?\d+(?:\.\d+)?)/.exec(line);
@@ -105,11 +144,27 @@ function parseSilenceEnd(line: string): { end: number; duration: number } | null
   };
 }
 
+/** "astats ... Overall.RMS_level=-12.3" or "RMS_level=-12.3" */
+function parseAudioRms(line: string): { atSeconds: number; rmsDb: number } | null {
+  const tM = /pts_time:\s*(-?\d+(?:\.\d+)?)/.exec(line);
+  const rM = /RMS_level=(-?\d+(?:\.\d+)?)/.exec(line);
+  if (!tM || !rM) return null;
+  return { atSeconds: Number(tM[1]), rmsDb: Number(rM[1]) };
+}
+
 /* ----------------------------- algorithm ----------------------------- */
 
 interface RawSignal {
   atSeconds: number;
   kind: 'scene-change' | 'resume-from-silence';
+  /** Optional per-event stdev mean (only for scene-change events). */
+  stdevMean?: number;
+}
+
+interface AudioSample {
+  atSeconds: number;
+  /** RMS in dBFS, e.g. -20.0 (louder = closer to 0). */
+  rmsDb: number;
 }
 
 function buildRawSignals(stderr: string, _sceneThreshold: number): RawSignal[] {
@@ -118,7 +173,10 @@ function buildRawSignals(stderr: string, _sceneThreshold: number): RawSignal[] {
   for (const line of stderr.split('\n')) {
     if (/Parsed_showinfo_/.test(line) && /pts_time:/.test(line)) {
       const t = parseShowinfoPtsTime(line);
-      if (t !== null) signals.push({ atSeconds: t, kind: 'scene-change' });
+      if (t !== null) {
+        const stdev = parseShowinfoStdevMean(line) ?? undefined;
+        signals.push({ atSeconds: t, kind: 'scene-change', stdevMean: stdev });
+      }
       continue;
     }
     if (/silence_end:/.test(line)) {
@@ -128,11 +186,9 @@ function buildRawSignals(stderr: string, _sceneThreshold: number): RawSignal[] {
     }
   }
 
-  // Sort by time.
   signals.sort((a, b) => a.atSeconds - b.atSeconds);
 
   // Suppress duplicate scene-change points that fire on consecutive frames.
-  // FFmpeg's scene filter can produce a few hits per actual cut.
   const deduped: RawSignal[] = [];
   for (const s of signals) {
     const last = deduped[deduped.length - 1];
@@ -142,37 +198,123 @@ function buildRawSignals(stderr: string, _sceneThreshold: number): RawSignal[] {
   return deduped;
 }
 
-function scoreCandidate(
-  _start: number,
-  _end: number,
-  signalsInWindow: RawSignal[],
-  wasClipped: boolean,
-): { score: number; reason: string } {
-  // Each scene change in the window contributes 0.25.
-  // Each resume-from-silence in the window contributes 0.20.
-  // A clipped segment loses 0.15 (its tail is gone, so it's less useful).
-  // Base score is 0.10 so even an empty segment has a non-zero floor.
-  let score = 0.1;
-  let scenes = 0;
-  let resumes = 0;
-  for (const s of signalsInWindow) {
-    if (s.kind === 'scene-change') scenes++;
-    else resumes++;
+function buildAudioSamples(stderr: string): AudioSample[] {
+  const out: AudioSample[] = [];
+  for (const line of stderr.split('\n')) {
+    const a = parseAudioRms(line);
+    if (a) out.push(a);
   }
-  score += Math.min(0.6, scenes * 0.25);
-  score += Math.min(0.4, resumes * 0.2);
-  if (wasClipped) score -= 0.15;
+  out.sort((a, b) => a.atSeconds - b.atSeconds);
+  return out;
+}
+
+/** dBFS in [-60, 0] -> 0..1. -60 dB is silence, 0 dB is full scale. */
+function dbfsToActivity(db: number): number {
+  const clamped = Math.max(-60, Math.min(0, db));
+  return (clamped + 60) / 60;
+}
+
+function meanRmsActivity(samples: AudioSample[], start: number, end: number): number {
+  const inWindow = samples.filter((s) => s.atSeconds >= start && s.atSeconds <= end);
+  if (inWindow.length === 0) return 0;
+  const mean =
+    inWindow.reduce((a, s) => a + dbfsToActivity(s.rmsDb), 0) / inWindow.length;
+  return mean;
+}
+
+function meanStdev(signals: RawSignal[], start: number, end: number): number {
+  const inWindow = signals.filter(
+    (s) => s.kind === 'scene-change' && s.stdevMean !== undefined && s.atSeconds >= start && s.atSeconds <= end,
+  );
+  if (inWindow.length === 0) return 0;
+  return inWindow.reduce((a, s) => a + (s.stdevMean ?? 0), 0) / inWindow.length;
+}
+
+function scoreCandidate(
+  start: number,
+  end: number,
+  sourceDuration: number,
+  signalsInWindow: RawSignal[],
+  audioActivity: number,
+  visualVariance: number,
+  wasClipped: boolean,
+): { score: number; reason: string; breakdown: HighlightCandidate['signalBreakdown']; signalKinds: HighlightCandidate['signals'] } {
+  // Per-signal contributions, all in [0, 1].
+  const scenes = signalsInWindow.filter((s) => s.kind === 'scene-change').length;
+  const resumes = signalsInWindow.filter((s) => s.kind === 'resume-from-silence').length;
+
+  const sceneChange = Math.min(1, scenes * 0.4);
+  const resumeFromSilence = Math.min(1, resumes * 0.5);
+  // Audio activity is already in [0, 1].
+  const audio = Math.max(0, Math.min(1, audioActivity));
+  // Visual variance: clamp mean stdev to a useful range. Testsrc
+  // (a static test pattern) reports stdev ~0; a high-motion scene
+  // typically reports stdev 20–60. We map 0..30 to 0..1.
+  const visual = Math.max(0, Math.min(1, visualVariance / 30));
+
+  // Duration fit: a Gaussian centred on 22s with sigma 12s, clipped to [0, 1].
+  const dur = end - start;
+  const idealDur = 22;
+  const sigma = 12;
+  const durationFit = Math.max(0, Math.min(1, Math.exp(-((dur - idealDur) ** 2) / (2 * sigma * sigma))));
+
+  // Position score: 1.0 at the start, decays linearly to 0.5 at the end.
+  // This reflects the common pattern that "hook" content lives near the
+  // beginning of a video, without being aggressive enough to filter out
+  // good candidates near the end.
+  const position = Math.max(0.5, 1 - (start / Math.max(1, sourceDuration)) * 0.5);
+
+  // Combine. Weights chosen so a clip with multiple strong signals lands
+  // comfortably above 0.7, while a clip with no signals sits around 0.2.
+  const weights = {
+    sceneChange: 0.28,
+    resumeFromSilence: 0.16,
+    audio: 0.18,
+    visual: 0.10,
+    durationFit: 0.12,
+    position: 0.06,
+  };
+  const raw =
+    weights.sceneChange * sceneChange +
+    weights.resumeFromSilence * resumeFromSilence +
+    weights.audio * audio +
+    weights.visual * visual +
+    weights.durationFit * durationFit +
+    weights.position * position;
+  let score = raw;
+  if (wasClipped) score -= 0.12;
   score = Math.max(0, Math.min(1, score));
 
-  // Choose a concise reason that names the dominant signal.
-  let reason: string;
-  if (scenes >= 2) reason = 'multiple scene changes';
-  else if (scenes === 1 && resumes === 1) reason = 'scene change with resumed speech';
-  else if (scenes === 1) reason = 'scene change';
-  else if (resumes >= 1) reason = 'speech resumed';
-  else reason = 'temporal window';
+  // Choose a concise reason that names the dominant signals.
+  const parts: string[] = [];
+  if (scenes >= 2) parts.push('multiple scene changes');
+  else if (scenes === 1) parts.push('scene change');
+  if (resumes >= 1) parts.push('speech resumed');
+  if (audio > 0.6) parts.push('active audio');
+  if (visual > 0.5) parts.push('dynamic visuals');
+  if (parts.length === 0) parts.push('temporal window');
+  const reason = parts.join(', ');
 
-  return { score, reason };
+  // Determine which high-level signals "fired" (i.e. meaningfully contributed).
+  const signalKinds: HighlightCandidate['signals'] = [];
+  if (sceneChange > 0.3) signalKinds.push('scene-change');
+  if (resumeFromSilence > 0.3) signalKinds.push('resume-from-silence');
+  if (audio > 0.5) signalKinds.push('high-audio-activity');
+  if (visual > 0.4) signalKinds.push('high-visual-variance');
+
+  return {
+    score,
+    reason,
+    signalKinds,
+    breakdown: {
+      sceneChange: round3(sceneChange),
+      resumeFromSilence: round3(resumeFromSilence),
+      audioActivity: round3(audio),
+      visualVariance: round3(visual),
+      durationFit: round3(durationFit),
+      position: round3(position),
+    },
+  };
 }
 
 /**
@@ -203,26 +345,33 @@ export async function detectHighlights(
     );
   }
 
-  // Build the ffmpeg argument list. Note: we use the same safe-spawning
-  // pipeline (argv only, no shell). The threshold value is a real number
-  // we control, never a user-supplied string.
+  // Build the ffmpeg argument list. We combine:
+  //   - the scene-cut select/showinfo filter
+  //   - the silencedetect audio filter
+  //   - the astats audio-meter filter (per-frame RMS level)
+  // The -map 0:v / -map 0:a trick keeps the original streams intact so
+  // the muxer has a real video and audio stream to work with, even
+  // though we are writing to a null output.
   const args: string[] = [
     '-hide_banner',
     '-nostdin',
     '-i', inputPath,
+    '-map', '0:v', '-map', '0:a?',
     '-vf', `select='gt(scene,${sceneThreshold.toFixed(3)})',showinfo`,
-    '-af', `silencedetect=noise=${silenceDb}dB:d=${silenceMinSeconds.toFixed(3)}`,
+    '-af', `silencedetect=noise=${silenceDb}dB:d=${silenceMinSeconds.toFixed(3)},` +
+            `astats=metadata=1:reset=1,ametadata=print:key=lavfi.astats.Overall.RMS_level`,
     '-f', 'null',
     '-',
   ];
 
   const result = await runFfmpeg(args, { allowNonZeroExit: true, timeoutMs: 5 * 60_000 });
   const signals = buildRawSignals(result.stderr, sceneThreshold);
+  const audioSamples = buildAudioSamples(result.stderr);
 
   const sceneSignals = signals.filter((s) => s.kind === 'scene-change');
   const silenceSignals = signals.filter((s) => s.kind === 'resume-from-silence');
 
-  if (signals.length === 0) {
+  if (signals.length === 0 && audioSamples.length === 0) {
     return {
       source,
       candidates: [],
@@ -231,9 +380,24 @@ export async function detectHighlights(
     };
   }
 
-  // Each signal becomes a candidate start. We then snap a window
-  // [start, start + defaultDurationSeconds] and clip to source duration
-  // and the [minDurationSeconds, maxDurationSeconds] bounds.
+  // Build windows: each scene change OR each silence-resume point seeds a
+  // window of [start, start + defaultDurationSeconds]. We then snap-clip
+  // to source duration and the [minDurationSeconds, maxDurationSeconds]
+  // bounds.
+  const seedTimes: number[] = [];
+  for (const s of signals) seedTimes.push(s.atSeconds);
+  if (audioSamples.length > 0) {
+    // Also seed at the loudest moment if the audio is unusually active.
+    // This gives the detector a chance to suggest a clip even if the
+    // video itself has no scene changes.
+    let loudest = audioSamples[0]!;
+    for (const a of audioSamples) {
+      if (a.rmsDb > loudest.rmsDb) loudest = a;
+    }
+    if (dbfsToActivity(loudest.rmsDb) > 0.5) seedTimes.push(loudest.atSeconds);
+  }
+  seedTimes.sort((a, b) => a - b);
+
   const windows: Array<{
     start: number;
     end: number;
@@ -241,8 +405,8 @@ export async function detectHighlights(
     signals: RawSignal[];
   }> = [];
 
-  for (const s of signals) {
-    const desiredStart = Math.max(0, s.atSeconds);
+  for (const at of seedTimes) {
+    const desiredStart = Math.max(0, at);
     const desiredEnd = Math.min(sourceDuration, desiredStart + defaultDurationSeconds);
     if (desiredEnd - desiredStart < minDurationSeconds) continue;
     const wasClipped = desiredEnd - desiredStart < defaultDurationSeconds;
@@ -250,7 +414,7 @@ export async function detectHighlights(
       start: desiredStart,
       end: desiredEnd,
       wasClipped,
-      signals: [s],
+      signals: signals.filter((s) => s.atSeconds >= desiredStart && s.atSeconds <= desiredEnd),
     });
   }
 
@@ -268,7 +432,8 @@ export async function detectHighlights(
     }
   }
 
-  // Build candidates, applying min/max duration bounds.
+  // Build candidates, applying min/max duration bounds and the
+  // multi-signal scoring.
   const candidates: HighlightCandidate[] = [];
   for (const w of merged) {
     let dur = w.end - w.start;
@@ -281,16 +446,24 @@ export async function detectHighlights(
     const signalsInWindow: RawSignal[] = w.signals.filter(
       (s) => s.atSeconds >= w.start && s.atSeconds <= w.start + dur,
     );
-    const { score, reason } = scoreCandidate(w.start, w.start + dur, signalsInWindow, clipped);
-    const signalKinds = Array.from(new Set(signalsInWindow.map((s) => s.kind))) as Array<
-      'scene-change' | 'resume-from-silence'
-    >;
+    const audioActivity = meanRmsActivity(audioSamples, w.start, w.start + dur);
+    const visualVariance = meanStdev(signals, w.start, w.start + dur);
+    const { score, reason, breakdown, signalKinds } = scoreCandidate(
+      w.start,
+      w.start + dur,
+      sourceDuration,
+      signalsInWindow,
+      audioActivity,
+      visualVariance,
+      clipped,
+    );
     candidates.push({
       startSeconds: round3(w.start),
       durationSeconds: round3(dur),
       score: round3(score),
       reason,
       signals: signalKinds,
+      signalBreakdown: breakdown,
       wasClipped: clipped,
     });
   }

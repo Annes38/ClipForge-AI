@@ -57,7 +57,17 @@ export interface HighlightCandidate {
   durationSeconds: number;
   score: number;
   reason: string;
-  signals: Array<'scene-change' | 'resume-from-silence'>;
+  signals: Array<
+    'scene-change' | 'resume-from-silence' | 'high-audio-activity' | 'high-visual-variance'
+  >;
+  signalBreakdown: {
+    sceneChange: number;
+    resumeFromSilence: number;
+    audioActivity: number;
+    visualVariance: number;
+    durationFit: number;
+    position: number;
+  };
   wasClipped: boolean;
 }
 

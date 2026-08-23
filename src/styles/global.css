@@ -219,3 +219,27 @@ details summary { cursor: pointer; min-height: 30px; display: flex; align-items:
 .clip-row-head { display: flex; align-items: center; justify-content: space-between; gap: 10px; }
 .clip-row-title { font-weight: 600; font-size: 0.95rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .clip-row-meta { font-size: 0.78rem; margin-top: 3px; }
+
+/* Suggestion: per-signal breakdown bars */
+.signal-grid {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 6px 14px;
+  margin-top: 10px;
+}
+.signal-bar { display: flex; align-items: center; gap: 8px; }
+.signal-bar-label { font-size: 0.72rem; color: var(--muted); min-width: 92px; }
+.signal-bar-track {
+  flex: 1;
+  height: 6px;
+  border-radius: 99px;
+  background: var(--surface);
+  overflow: hidden;
+}
+.signal-bar-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), var(--accent-2));
+  border-radius: 99px;
+  transition: width 0.3s ease;
+}
+.signal-bar-value { font-size: 0.7rem; color: var(--muted); min-width: 36px; text-align: right; font-variant-numeric: tabular-nums; }
