@@ -1,2 +1,15 @@
 node_modules/
 dist/
+
+# Python virtualenv holding the imageio-ffmpeg binary (~80 MB) — provisioned
+# by `npm run setup:ffmpeg`, never committed.
+.venv/
+
+# Runtime state: uploads, rendered clips, SQLite database.
+data/
+*.db
+*.db-wal
+*.db-shm
+
+.DS_Store
+*.log
