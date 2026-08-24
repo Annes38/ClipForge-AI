@@ -41,6 +41,7 @@
                     <option value="vwap_institutional">VWAP المؤسسات</option>
                     <option value="momentum_breakout">اختراق الزخم</option>
                 </select>
+                <button id="realDataBtnEx" onclick="enableRealDataForExchange()" class="bg-gradient-to-r from-green-500 to-emerald-600 text-white px-3 py-2 rounded-full font-bold text-xs">📡 بيانات حقيقية</button>
                 <button onclick="loadExchangeData()" class="bg-yellow-500 hover:bg-yellow-600 text-black px-4 py-2 rounded-full font-bold text-sm">🔄</button>
             </div>
         </div>
@@ -111,10 +112,42 @@
         </div>
     </div>
 
+    <script src="/js/realDataFetcher.js"></script>
     <script>
         let currentExchange = null;
         let allSignals = [];
         let currentFilter = 'all';
+        let realDataEnabled = false;
+
+        async function enableRealDataForExchange() {
+            const exchangeId = getExchangeId();
+            const btn = document.getElementById('realDataBtnEx');
+            if (btn) {
+                btn.textContent = '⏳ جاري جلب بيانات حقيقية...';
+                btn.disabled = true;
+            }
+
+            try {
+                console.log(`📡 Fetching REAL data for ${exchangeId}...`);
+                const data = await window.realDataFetcher.fetchAllForExchange(exchangeId, document.getElementById('timeframeSelect').value);
+                const count = Object.keys(data).length;
+                
+                realDataEnabled = true;
+                if (btn) {
+                    btn.textContent = `✅ بيانات حقيقية (${count} عملة)`;
+                    btn.className = 'bg-green-600 text-white px-4 py-2 rounded-full font-bold text-xs';
+                }
+                
+                // إعادة تحميل
+                loadExchangeData();
+            } catch (e) {
+                console.error(e);
+                if (btn) {
+                    btn.textContent = '❌ فشل، حاول مجدداً';
+                    btn.disabled = false;
+                }
+            }
+        }
 
         function getExchangeId() {
             const urlParams = new URLSearchParams(window.location.search);
@@ -330,8 +363,18 @@
             renderSignals(allSignals);
         }
 
-        // Load on start
+        // Load on start + auto real data
         loadExchangeData();
+        
+        setTimeout(async () => {
+            console.log('🚀 Auto-enabling real data for exchange...');
+            try {
+                await enableRealDataForExchange();
+            } catch (e) {
+                console.warn('Auto real data failed:', e);
+            }
+        }, 1500);
+        
         setInterval(loadExchangeData, 30000);
     </script>
 </body>

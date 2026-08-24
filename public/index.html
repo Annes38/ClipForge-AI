@@ -28,6 +28,7 @@
                 <div class="bg-gray-900 px-3 py-1 rounded-full text-xs border border-gray-700">
                     <span class="w-2 h-2 bg-green-500 rounded-full inline-block animate-pulse"></span> Live
                 </div>
+                <button id="realDataBtn" onclick="enableRealData()" class="bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 text-white px-4 py-2 rounded-full font-bold text-sm">📡 فعل بيانات حقيقية</button>
                 <button onclick="loadExchanges()" class="bg-yellow-500 hover:bg-yellow-600 text-black px-4 py-2 rounded-full font-bold text-sm">🔄 تحديث</button>
             </div>
         </div>
@@ -93,7 +94,45 @@
         </div>
     </div>
 
+    <script src="/js/realDataFetcher.js"></script>
     <script>
+        let realDataEnabled = false;
+
+        async function enableRealData() {
+            const btn = document.getElementById('realDataBtn');
+            if (btn) {
+                btn.textContent = '⏳ جاري جلب بيانات حقيقية...';
+                btn.disabled = true;
+            }
+            
+            // جلب بيانات حقيقية لكل المنصات من المتصفح
+            const exchanges = ['binance', 'okx', 'kraken', 'coinbase', 'bitget', 'bybit'];
+            let successCount = 0;
+            
+            for (const exId of exchanges) {
+                try {
+                    console.log(`📡 Fetching real data for ${exId}...`);
+                    const data = await window.realDataFetcher.fetchAllForExchange(exId, '15m');
+                    const count = Object.keys(data).length;
+                    if (count > 0) {
+                        successCount += count;
+                        console.log(`✅ ${exId}: ${count} symbols real data`);
+                    }
+                } catch (e) {
+                    console.warn(`Failed for ${exId}:`, e);
+                }
+            }
+            
+            realDataEnabled = true;
+            if (btn) {
+                btn.textContent = `✅ بيانات حقيقية مفعلة (${successCount} عملة)`;
+                btn.className = 'bg-green-600 text-white px-4 py-2 rounded-full font-bold text-sm';
+            }
+            
+            // إعادة تحميل الإشارات
+            loadExchanges();
+        }
+
         async function loadExchanges() {
             const grid = document.getElementById('exchangesGrid');
             grid.innerHTML = '<div class="col-span-3 text-center py-20 text-gray-500">⏳ جاري تحميل المنصات...</div>';
@@ -202,8 +241,18 @@
             window.location.href = `/exchange.html?exchange=${id}`;
         }
 
-        // Auto load
+        // Auto load + auto real data
         loadExchanges();
+        
+        // بعد 2 ثانية، فعل البيانات الحقيقية تلقائياً
+        setTimeout(async () => {
+            console.log('🚀 Auto-enabling real data...');
+            try {
+                await enableRealData();
+            } catch (e) {
+                console.warn('Auto real data failed:', e);
+            }
+        }, 2000);
     </script>
 </body>
 </html>

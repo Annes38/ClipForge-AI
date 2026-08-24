@@ -11,6 +11,8 @@ import { EXCHANGES, ExchangeConfig, getExchangeById } from './config';
 export class ExchangeService {
   private ccxtInstances: Map<string, any> = new Map();
   private mockCandlesCache: Map<string, Map<string, Candle[]>> = new Map();
+  private realCandlesCache: Map<string, Map<string, { candles: Candle[]; timestamp: number; source: string }>> = new Map();
+  private realDataStats: Map<string, { lastUpdate: number; source: string; count: number }> = new Map();
 
   constructor() {
     // تهيئة CCXT لكل منصة
@@ -27,6 +29,10 @@ export class ExchangeService {
       } catch (e) {
         console.log(`⚠️ CCXT not available for ${exchangeConfig.id}, using mock`);
       }
+
+      // تهيئة Real cache
+      this.realCandlesCache.set(exchangeConfig.id, new Map());
+      this.realDataStats.set(exchangeConfig.id, { lastUpdate: 0, source: 'mock', count: 0 });
 
       // تهيئة Mock cache لكل منصة بأسلوب مختلف
       const symbolMap = new Map<string, Candle[]>();
@@ -101,20 +107,63 @@ export class ExchangeService {
   }
 
   /**
-   * جلب الشموع - يحاول CCXT أولاً، ثم Mock
+   * حقن بيانات حقيقية من المتصفح (لأن السيرفر محجوب)
+   */
+  injectRealCandles(exchangeId: string, symbol: string, candles: Candle[], source: string = 'browser') {
+    let exchangeCache = this.realCandlesCache.get(exchangeId);
+    if (!exchangeCache) {
+      exchangeCache = new Map();
+      this.realCandlesCache.set(exchangeId, exchangeCache);
+    }
+    
+    exchangeCache.set(symbol, {
+      candles,
+      timestamp: Date.now(),
+      source
+    });
+
+    const stats = this.realDataStats.get(exchangeId);
+    if (stats) {
+      stats.lastUpdate = Date.now();
+      stats.source = source;
+      stats.count = exchangeCache.size;
+    } else {
+      this.realDataStats.set(exchangeId, { lastUpdate: Date.now(), source, count: exchangeCache.size });
+    }
+
+    console.log(`✅ Real data injected for ${exchangeId} ${symbol}: ${candles.length} candles from ${source}`);
+  }
+
+  /**
+   * جلب الشموع - يحاول Real أولاً، ثم CCXT، ثم Mock
    */
   async fetchCandles(exchangeId: string, symbol: string, timeframe: Timeframe = '15m', limit: number = 300): Promise<Candle[]> {
     const exchangeConfig = getExchangeById(exchangeId);
     if (!exchangeConfig) throw new Error(`Exchange ${exchangeId} not found`);
 
-    // حاول CCXT
+    // 1. حاول Real Data (من المتصفح)
+    const realCache = this.realCandlesCache.get(exchangeId);
+    if (realCache) {
+      const real = realCache.get(symbol);
+      if (real && real.candles.length > 50) {
+        const age = Date.now() - real.timestamp;
+        // إذا البيانات أقل من 10 دقائق، استعملها
+        if (age < 10 * 60 * 1000) {
+          console.log(`📡 Using REAL data for ${exchangeId} ${symbol} (age ${Math.round(age/1000)}s from ${real.source})`);
+          return real.candles.slice(-limit);
+        } else {
+          console.log(`⚠️ Real data for ${exchangeId} ${symbol} too old (${Math.round(age/1000)}s), trying CCXT`);
+        }
+      }
+    }
+
+    // 2. حاول CCXT (قد يفشل في Sandbox)
     const ccxtInstance = this.ccxtInstances.get(exchangeId);
     if (ccxtInstance) {
       try {
-        // CCXT يستخدم 1m, 5m, 15m, 1h, 4h, 1d
         const ohlcv = await ccxtInstance.fetchOHLCV(symbol, timeframe, undefined, limit);
         if (ohlcv && ohlcv.length > 50) {
-          return ohlcv.map((c: any) => ({
+          const candles = ohlcv.map((c: any) => ({
             time: c[0],
             open: c[1],
             high: c[2],
@@ -122,18 +171,20 @@ export class ExchangeService {
             close: c[4],
             volume: c[5]
           }));
+          // احفظ كـ real أيضاً
+          this.injectRealCandles(exchangeId, symbol, candles, 'ccxt');
+          return candles;
         }
       } catch (e: any) {
         console.log(`⚠️ CCXT fetch failed for ${exchangeId} ${symbol}: ${e.message}, using mock`);
       }
     }
 
-    // Fallback Mock
+    // 3. Fallback Mock
     const exchangeCache = this.mockCandlesCache.get(exchangeId);
     if (exchangeCache) {
       const cached = exchangeCache.get(symbol);
       if (cached) {
-        // حدث آخر شمعة بعشوائية صغيرة لمحاكاة السوق الحي
         const last = cached[cached.length - 1];
         const newPrice = last.close * (1 + (Math.random() - 0.5) * 0.002);
         const newCandle: Candle = {
@@ -151,7 +202,6 @@ export class ExchangeService {
       }
     }
 
-    // أخيراً، ولّد جديد
     return CandleGenerator.generateMockCandles(limit, this.getSymbolBasePrice(symbol), this.getExchangeVolatility(exchangeId), 'bullish');
   }
 
@@ -185,12 +235,38 @@ export class ExchangeService {
     const config = getExchangeById(exchangeId);
     if (!config) return null;
 
+    const realStats = this.realDataStats.get(exchangeId);
+    const realCache = this.realCandlesCache.get(exchangeId);
+    const hasRealData = realCache && realCache.size > 0;
+    const realCount = realCache ? realCache.size : 0;
+
     return {
       ...config,
       symbolsCount: config.supportedSymbols.length,
       lastUpdate: new Date().toISOString(),
-      isRealData: this.ccxtInstances.has(exchangeId)
+      isRealData: hasRealData,
+      realDataInfo: realStats ? {
+        lastUpdate: new Date(realStats.lastUpdate).toISOString(),
+        ageSeconds: Math.round((Date.now() - realStats.lastUpdate) / 1000),
+        source: realStats.source,
+        symbolsWithRealData: realCount,
+        totalSymbols: config.supportedSymbols.length
+      } : null
     };
+  }
+
+  getRealDataStatus() {
+    const status: Record<string, any> = {};
+    for (const [exchangeId, stats] of this.realDataStats.entries()) {
+      const cache = this.realCandlesCache.get(exchangeId);
+      status[exchangeId] = {
+        ...stats,
+        lastUpdateISO: new Date(stats.lastUpdate).toISOString(),
+        ageSeconds: stats.lastUpdate ? Math.round((Date.now() - stats.lastUpdate) / 1000) : null,
+        symbols: cache ? Array.from(cache.keys()) : []
+      };
+    }
+    return status;
   }
 }
 

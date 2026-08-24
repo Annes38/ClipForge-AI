@@ -165,17 +165,68 @@ app.get('/api/exchanges/:exchangeId/candles/:symbol', async (req, res) => {
 
   try {
     const candles = await exchangeService.fetchCandles(exchangeId, symbol, timeframe, limit);
+    const stats = await exchangeService.getExchangeStats(exchangeId);
     res.json({
       success: true,
       exchangeId,
       symbol,
       timeframe,
       count: candles.length,
-      candles: candles.slice(-limit)
+      candles: candles.slice(-limit),
+      isRealData: (stats as any)?.isRealData || false,
+      realDataInfo: (stats as any)?.realDataInfo || null
     });
   } catch (error: any) {
     res.status(500).json({ success: false, error: error.message });
   }
+});
+
+app.post('/api/exchanges/:exchangeId/candles/:symbol', async (req, res) => {
+  const exchangeId = req.params.exchangeId;
+  const symbol = req.params.symbol as string;
+  const { candles, source } = req.body;
+
+  if (!Array.isArray(candles)) {
+    return res.status(400).json({ success: false, error: 'candles must be array' });
+  }
+
+  try {
+    exchangeService.injectRealCandles(exchangeId, symbol, candles, source || 'browser-real');
+    res.json({
+      success: true,
+      message: `✅ Real data injected for ${exchangeId} ${symbol}: ${candles.length} candles from ${source}`,
+      exchangeId,
+      symbol,
+      count: candles.length,
+      source: source || 'browser-real',
+      timestamp: new Date().toISOString()
+    });
+  } catch (error: any) {
+    res.status(500).json({ success: false, error: error.message });
+  }
+});
+
+app.get('/api/real-data/status', (req, res) => {
+  const status = exchangeService.getRealDataStatus();
+  res.json({
+    success: true,
+    status,
+    timestamp: new Date().toISOString(),
+    message: 'Real data status for all exchanges'
+  });
+});
+
+app.post('/api/real-data/refresh', async (req, res) => {
+  // This endpoint is for manual refresh trigger
+  // Real fetching happens in browser via realDataFetcher.js
+  res.json({
+    success: true,
+    message: 'To refresh real data, the frontend will fetch from exchanges directly (browser has internet, server sandbox is blocked)',
+    instructions: 'Open dashboard, it will auto-fetch real data from Binance, OKX, Kraken, Coinbase, Bitget via browser',
+    workingExchanges: ['binance', 'okx', 'kraken', 'coinbase', 'bitget'],
+    blockedExchanges: ['bybit (uses Binance proxy)'],
+    timestamp: new Date().toISOString()
+  });
 });
 
 // ============ LEGACY ROUTES (backward compat) ============
