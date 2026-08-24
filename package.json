@@ -1,0 +1,31 @@
+{
+  "name": "clipforge-ai-enhanced-trading",
+  "version": "1.0.0",
+  "description": "ClipForge AI - Enhanced Crypto Trading Bot with Pro Strategies and Confidence Scoring",
+  "main": "dist/index.js",
+  "scripts": {
+    "dev": "tsx watch src/index.ts",
+    "start": "tsx src/index.ts",
+    "build": "tsc",
+    "api": "tsx src/api/server.ts",
+    "test:strategies": "tsx src/engine/backtester.ts"
+  },
+  "dependencies": {
+    "technicalindicators": "^3.1.0",
+    "express": "^4.18.2",
+    "cors": "^2.8.5",
+    "ws": "^8.13.0",
+    "ccxt": "^4.2.0"
+  },
+  "devDependencies": {
+    "tsx": "^4.7.0",
+    "typescript": "^5.3.0",
+    "@types/express": "^4.17.21",
+    "@types/cors": "^2.8.17",
+    "@types/ws": "^8.5.10",
+    "@types/node": "^20.10.0"
+  },
+  "engines": {
+    "node": ">=18.0"
+  }
+}

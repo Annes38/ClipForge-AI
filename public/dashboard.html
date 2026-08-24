@@ -1,0 +1,240 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ClipForge AI - نظام الإشارات الاحترافي</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;700;800&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Tajawal', sans-serif; }
+        .confidence-bar { transition: width 0.5s ease; }
+        .signal-card { transition: all 0.3s ease; }
+        .signal-card:hover { transform: translateY(-2px); }
+    </style>
+</head>
+<body class="bg-gray-900 text-white min-h-screen">
+    <!-- Header -->
+    <header class="bg-gray-800 border-b border-gray-700 p-4">
+        <div class="max-w-7xl mx-auto flex justify-between items-center">
+            <div>
+                <h1 class="text-2xl font-bold text-green-400">🚀 ClipForge AI</h1>
+                <p class="text-sm text-gray-400">نظام الإشارات الاحترافي - استراتيجيات كبار المتداولين</p>
+            </div>
+            <div class="flex gap-2">
+                <select id="timeframeSelect" class="bg-gray-700 px-3 py-2 rounded">
+                    <option value="5m">5 دقائق</option>
+                    <option value="15m" selected>15 دقيقة</option>
+                    <option value="1h">ساعة</option>
+                    <option value="4h">4 ساعات</option>
+                    <option value="1d">يوم</option>
+                </select>
+                <select id="strategySelect" class="bg-gray-700 px-3 py-2 rounded">
+                    <option value="all" selected>كل الاستراتيجيات (توافق)</option>
+                    <option value="pro_confluence">Pro Confluence V2</option>
+                    <option value="vwap_institutional">VWAP المؤسسات</option>
+                    <option value="momentum_breakout">اختراق الزخم</option>
+                </select>
+                <button onclick="loadSignals()" class="bg-green-600 hover:bg-green-700 px-4 py-2 rounded font-bold">🔄 تحديث</button>
+            </div>
+        </div>
+    </header>
+
+    <div class="max-w-7xl mx-auto p-4 grid grid-cols-12 gap-4">
+        <!-- Left - Signals -->
+        <div class="col-span-12 lg:col-span-8">
+            <div class="bg-gray-800 rounded-lg p-4 mb-4">
+                <h2 class="text-xl font-bold mb-2">📡 الإشارات الحالية - مع نسبة الثقة ووقت الدخول</h2>
+                <p class="text-sm text-gray-400">النظام يحسب نسبة الثقة بناء على توافق 8 مؤشرات احترافية</p>
+            </div>
+            
+            <div id="signalsContainer" class="space-y-4">
+                <div class="text-center py-10 text-gray-400">جاري التحميل...</div>
+            </div>
+        </div>
+
+        <!-- Right - Info -->
+        <div class="col-span-12 lg:col-span-4 space-y-4">
+            <div class="bg-gray-800 rounded-lg p-4">
+                <h3 class="font-bold text-lg mb-3">🧠 كيف نحسب نسبة الثقة؟</h3>
+                <div class="space-y-2 text-sm">
+                    <div class="flex justify-between"><span>📈 EMA Trend (اتجاه)</span><span class="text-green-400">20 نقطة</span></div>
+                    <div class="flex justify-between"><span>🏦 VWAP (المؤسسات)</span><span class="text-green-400">15 نقطة</span></div>
+                    <div class="flex justify-between"><span>⚡ RSI (زخم)</span><span class="text-green-400">15 نقطة</span></div>
+                    <div class="flex justify-between"><span>📊 MACD (زخم)</span><span class="text-green-400">15 نقطة</span></div>
+                    <div class="flex justify-between"><span>🔥 Supertrend (محترفين)</span><span class="text-green-400">15 نقطة</span></div>
+                    <div class="flex justify-between"><span>📉 Bollinger (تقلب)</span><span class="text-green-400">10 نقاط</span></div>
+                    <div class="flex justify-between"><span>📦 Volume (حجم)</span><span class="text-green-400">5 نقاط</span></div>
+                    <div class="flex justify-between"><span>💪 ADX (قوة)</span><span class="text-green-400">5 نقاط</span></div>
+                    <div class="border-t border-gray-700 pt-2 flex justify-between font-bold"><span>المجموع</span><span>100 نقطة = 100%</span></div>
+                </div>
+                <div class="mt-4 p-3 bg-gray-900 rounded text-xs text-gray-300">
+                    <p>💡 <b>مثال:</b> إذا قال بيع 80% معناه 80 نقطة من 100 متفقة على البيع. كلما زادت النسبة زادت قوة الإشارة.</p>
+                    <p class="mt-2">🔥 إذا 2 أو 3 استراتيجيات متفقة = نزيد 8% لكل استراتيجية إضافية!</p>
+                </div>
+            </div>
+
+            <div class="bg-gray-800 rounded-lg p-4">
+                <h3 class="font-bold mb-3">📚 الاستراتيجيات المدمجة</h3>
+                <div class="space-y-3 text-sm">
+                    <div class="bg-gray-900 p-3 rounded">
+                        <div class="font-bold text-green-400">1. Pro Confluence V2</div>
+                        <div class="text-gray-400">توافق 8 مؤشرات - استراتيجية رقم 1 للمحترفين 2026. لا دخول إلا إذا 60%+ توافق.</div>
+                    </div>
+                    <div class="bg-gray-900 p-3 rounded">
+                        <div class="font-bold text-blue-400">2. VWAP Institutional</div>
+                        <div class="text-gray-400">مؤشر المؤسسات 9/10. السعر فوق VWAP = شراء، تحت = بيع. أفضل إشارة ارتداد من VWAP.</div>
+                    </div>
+                    <div class="bg-gray-900 p-3 rounded">
+                        <div class="font-bold text-purple-400">3. Momentum Breakout</div>
+                        <div class="text-gray-400">صيد الانفجارات السعرية مع حجم أموال ذكية. انضغاط + كسر + حجم عالي = انفجار.</div>
+                    </div>
+                </div>
+            </div>
+
+            <div class="bg-gray-800 rounded-lg p-4">
+                <h3 class="font-bold mb-2">⏰ مدة الصفقة</h3>
+                <div class="text-xs space-y-1 text-gray-300">
+                    <div>• 5m: 5د - 30د (سكالبينج سريع)</div>
+                    <div>• 15m: 1س - 4س (يومي)</div>
+                    <div>• 1h: 4س - يوم (سوينغ قصير)</div>
+                    <div>• 4h: 12س - 3 أيام (سوينغ)</div>
+                    <div>• 1d: يوم - أسبوع (استثمار)</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        async function loadSignals() {
+            const timeframe = document.getElementById('timeframeSelect').value;
+            const strategy = document.getElementById('strategySelect').value;
+            const container = document.getElementById('signalsContainer');
+            
+            container.innerHTML = '<div class="text-center py-10 text-gray-400">⏳ جاري حساب الإشارات مع نسبة الثقة...</div>';
+            
+            try {
+                const res = await fetch(`/api/signals/all?timeframe=${timeframe}&strategy=${strategy}`);
+                const data = await res.json();
+                
+                if (!data.success || !data.signals || data.signals.length === 0) {
+                    container.innerHTML = '<div class="text-center py-10 text-gray-400">لا توجد إشارات حالياً - السوق جانبي</div>';
+                    return;
+                }
+                
+                container.innerHTML = data.signals.map(signal => renderSignalCard(signal)).join('');
+            } catch (e) {
+                container.innerHTML = `<div class="text-center py-10 text-red-400">خطأ: ${e.message}</div>`;
+            }
+        }
+
+        function renderSignalCard(s) {
+            const isBuy = s.action.includes('BUY');
+            const isSell = s.action.includes('SELL');
+            const isHold = s.action === 'HOLD';
+            
+            const actionColor = isBuy ? 'bg-green-600' : isSell ? 'bg-red-600' : 'bg-gray-600';
+            const actionText = isBuy ? (s.action === 'STRONG_BUY' ? 'شراء قوي 🚀' : 'شراء 📈') : 
+                              isSell ? (s.action === 'STRONG_SELL' ? 'بيع قوي 💥' : 'بيع 📉') : 'انتظار ⏸️';
+            
+            const confColor = s.confidence >= 80 ? 'bg-green-500' : s.confidence >= 60 ? 'bg-yellow-500' : 'bg-red-500';
+            const confText = s.confidence >= 90 ? 'EXTREME 🔥🔥' : 
+                            s.confidence >= 80 ? 'قوي جداً 🔥' : 
+                            s.confidence >= 70 ? 'قوي 💪' : 
+                            s.confidence >= 60 ? 'متوسط 👍' : 'ضعيف ⚠️';
+            
+            return `
+            <div class="signal-card bg-gray-800 rounded-lg border ${isBuy ? 'border-green-500/30' : isSell ? 'border-red-500/30' : 'border-gray-600'} p-4">
+                <div class="flex justify-between items-start mb-3">
+                    <div>
+                        <div class="flex items-center gap-2">
+                            <span class="text-xl font-bold">${s.symbol}</span>
+                            <span class="${actionColor} px-3 py-1 rounded-full text-sm font-bold">${actionText}</span>
+                            <span class="bg-gray-700 px-2 py-1 rounded text-xs">${s.timeframe}</span>
+                        </div>
+                        <div class="text-xs text-gray-400 mt-1">⏰ دخول: ${new Date(s.entryTime).toLocaleString('ar-DZ')} | 💰 سعر: ${s.entryPrice}</div>
+                    </div>
+                    <div class="text-right">
+                        <div class="text-2xl font-black ${s.confidence >= 70 ? 'text-green-400' : s.confidence >= 60 ? 'text-yellow-400' : 'text-red-400'}">${s.confidence}%</div>
+                        <div class="text-xs ${confColor} px-2 py-1 rounded text-black font-bold">${confText}</div>
+                    </div>
+                </div>
+                
+                <div class="mb-3">
+                    <div class="flex justify-between text-xs mb-1">
+                        <span>نسبة الثقة</span>
+                        <span>${s.confidence}% من 100%</span>
+                    </div>
+                    <div class="w-full bg-gray-700 rounded-full h-3">
+                        <div class="confidence-bar ${confColor} h-3 rounded-full" style="width: ${s.confidence}%"></div>
+                    </div>
+                    <div class="flex justify-between text-[10px] text-gray-400 mt-1">
+                        <span>0% ضعيف</span>
+                        <span>60% دخول</span>
+                        <span>80% قوي</span>
+                        <span>100% 🔥</span>
+                    </div>
+                </div>
+                
+                <div class="grid grid-cols-3 gap-2 mb-3 text-xs">
+                    <div class="bg-gray-900 p-2 rounded text-center">
+                        <div class="text-gray-400">وقف خسارة</div>
+                        <div class="font-bold text-red-400">${s.stopLoss}</div>
+                    </div>
+                    <div class="bg-gray-900 p-2 rounded text-center">
+                        <div class="text-gray-400">هدف أول</div>
+                        <div class="font-bold text-green-400">${s.takeProfit}</div>
+                    </div>
+                    <div class="bg-gray-900 p-2 rounded text-center">
+                        <div class="text-gray-400">R/R - مدة</div>
+                        <div class="font-bold">${s.riskReward} - ${s.suggestedDuration}</div>
+                    </div>
+                </div>
+                
+                <div class="bg-gray-900 rounded p-3 mb-3">
+                    <div class="text-xs font-bold mb-2">🧠 تحليل التوافق (${s.confluence.bullish_points} صاعد vs ${s.confluence.bearish_points} هابط):</div>
+                    <div class="grid grid-cols-2 gap-2 text-[11px]">
+                        ${Object.entries(s.confluence.components).map(([key, comp]) => `
+                            <div class="flex justify-between ${comp.bullish ? 'text-green-300' : 'text-red-300'}">
+                                <span>${getCompName(key)}</span>
+                                <span>${comp.score}/${comp.max}</span>
+                            </div>
+                        `).join('')}
+                    </div>
+                </div>
+                
+                <div class="text-xs">
+                    <div class="font-bold mb-1">📝 أسباب الإشارة:</div>
+                    <ul class="list-disc list-inside space-y-1 text-gray-300">
+                        ${s.reasons_ar.slice(0, 4).map(r => `<li>${r}</li>`).join('')}
+                    </ul>
+                </div>
+                
+                <div class="mt-3 flex justify-between text-[10px] text-gray-500">
+                    <span>استراتيجية: ${s.strategy_used}</span>
+                    <span>انتهاء: ${new Date(s.expiryTime).toLocaleString('ar-DZ')}</span>
+                </div>
+            </div>
+            `;
+        }
+
+        function getCompName(key) {
+            const names = {
+                trend_ema: '📈 EMA',
+                vwap: '🏦 VWAP',
+                momentum_rsi: '⚡ RSI',
+                momentum_macd: '📊 MACD',
+                supertrend: '🔥 Supertrend',
+                bollinger: '📉 BB',
+                volume: '📦 Vol',
+                adx: '💪 ADX'
+            };
+            return names[key] || key;
+        }
+
+        // Auto load
+        loadSignals();
+        setInterval(loadSignals, 30000); // تحديث كل 30 ثانية
+    </script>
+</body>
+</html>
