@@ -1,0 +1,209 @@
+<!DOCTYPE html>
+<html lang="ar" dir="rtl">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>ClipForge AI - 6 منصات تداول احترافية</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;700;800;900&display=swap" rel="stylesheet">
+    <style>
+        body { font-family: 'Tajawal', sans-serif; }
+        .exchange-card { transition: all 0.3s ease; }
+        .exchange-card:hover { transform: translateY(-5px) scale(1.02); }
+        .gradient-text { background-clip: text; -webkit-background-clip: text; -webkit-text-fill-color: transparent; }
+    </style>
+</head>
+<body class="bg-[#0a0a0f] text-white min-h-screen">
+    <!-- Header -->
+    <header class="bg-black/50 backdrop-blur border-b border-gray-800 p-4 sticky top-0 z-50">
+        <div class="max-w-7xl mx-auto flex justify-between items-center">
+            <div class="flex items-center gap-3">
+                <div class="w-10 h-10 bg-gradient-to-br from-yellow-400 to-orange-600 rounded-lg flex items-center justify-center font-black text-xl">C</div>
+                <div>
+                    <h1 class="text-xl font-black">ClipForge AI <span class="text-yellow-400">PRO</span></h1>
+                    <p class="text-[10px] text-gray-400">6 منصات - كل منصة مشروع وحدو</p>
+                </div>
+            </div>
+            <div class="flex gap-2">
+                <div class="bg-gray-900 px-3 py-1 rounded-full text-xs border border-gray-700">
+                    <span class="w-2 h-2 bg-green-500 rounded-full inline-block animate-pulse"></span> Live
+                </div>
+                <button onclick="loadExchanges()" class="bg-yellow-500 hover:bg-yellow-600 text-black px-4 py-2 rounded-full font-bold text-sm">🔄 تحديث</button>
+            </div>
+        </div>
+    </header>
+
+    <!-- Hero -->
+    <div class="max-w-7xl mx-auto p-6">
+        <div class="text-center py-8">
+            <h2 class="text-4xl font-black mb-3">اختر المنصة <span class="bg-gradient-to-r from-yellow-400 to-orange-500 gradient-text">اللي تحبها</span></h2>
+            <p class="text-gray-400 max-w-2xl mx-auto">كل منصة فيها مشروع تحليل احترافي وحدو - إشارات بيع/شراء مع نسبة ثقة ووقت دخول ومدة صفقة. مبني على استراتيجيات كبار المتداولين.</p>
+            <div class="mt-4 flex justify-center gap-2 text-[10px]">
+                <span class="bg-gray-900 border border-gray-800 px-3 py-1 rounded-full">✅ 8 مؤشرات توافق</span>
+                <span class="bg-gray-900 border border-gray-800 px-3 py-1 rounded-full">✅ نسبة ثقة 0-100%</span>
+                <span class="bg-gray-900 border border-gray-800 px-3 py-1 rounded-full">✅ وقت دخول ومدة</span>
+            </div>
+        </div>
+
+        <!-- Stats -->
+        <div class="grid grid-cols-4 gap-3 mb-6">
+            <div class="bg-gray-900/50 border border-gray-800 rounded-xl p-3 text-center">
+                <div class="text-2xl font-black text-yellow-400" id="totalExchanges">6</div>
+                <div class="text-[10px] text-gray-400">منصات</div>
+            </div>
+            <div class="bg-gray-900/50 border border-gray-800 rounded-xl p-3 text-center">
+                <div class="text-2xl font-black text-green-400" id="totalSymbols">36</div>
+                <div class="text-[10px] text-gray-400">عملات</div>
+            </div>
+            <div class="bg-gray-900/50 border border-gray-800 rounded-xl p-3 text-center">
+                <div class="text-2xl font-black text-blue-400">3</div>
+                <div class="text-[10px] text-gray-400">استراتيجيات</div>
+            </div>
+            <div class="bg-gray-900/50 border border-gray-800 rounded-xl p-3 text-center">
+                <div class="text-2xl font-black text-purple-400">100%</div>
+                <div class="text-[10px] text-gray-400">ثقة</div>
+            </div>
+        </div>
+
+        <!-- Exchanges Grid -->
+        <div id="exchangesGrid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+            <div class="col-span-3 text-center py-20 text-gray-500">⏳ جاري تحميل المنصات...</div>
+        </div>
+
+        <!-- How it works -->
+        <div class="mt-10 bg-gray-900/30 border border-gray-800 rounded-2xl p-6">
+            <h3 class="font-black text-xl mb-4">🧠 كيف يخدم النظام؟</h3>
+            <div class="grid grid-cols-1 md:grid-cols-3 gap-4 text-sm">
+                <div class="bg-black/50 p-4 rounded-xl border border-gray-800">
+                    <div class="text-2xl mb-2">1️⃣</div>
+                    <div class="font-bold">تختار المنصة</div>
+                    <div class="text-gray-400 text-xs mt-1">مثلاً Binance - تدخل لمشروعها الخاص</div>
+                </div>
+                <div class="bg-black/50 p-4 rounded-xl border border-gray-800">
+                    <div class="text-2xl mb-2">2️⃣</div>
+                    <div class="font-bold">تشوف الإشارات</div>
+                    <div class="text-gray-400 text-xs mt-1">بيع 80% مع وقت دخول ومدة ووقف وهدف</div>
+                </div>
+                <div class="bg-black/50 p-4 rounded-xl border border-gray-800">
+                    <div class="text-2xl mb-2">3️⃣</div>
+                    <div class="font-bold">تدخل الصفقة</div>
+                    <div class="text-gray-400 text-xs mt-1">بناء على توافق 8 مؤشرات احترافية</div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        async function loadExchanges() {
+            const grid = document.getElementById('exchangesGrid');
+            grid.innerHTML = '<div class="col-span-3 text-center py-20 text-gray-500">⏳ جاري تحميل المنصات...</div>';
+            
+            try {
+                const res = await fetch('/api/exchanges');
+                const data = await res.json();
+                
+                if (!data.success) throw new Error('Failed');
+                
+                document.getElementById('totalExchanges').textContent = data.count;
+                document.getElementById('totalSymbols').textContent = data.exchanges.reduce((sum, ex) => sum + ex.symbolsCount, 0);
+                
+                grid.innerHTML = data.exchanges.map(ex => renderExchangeCard(ex)).join('');
+                
+                // Load signals count for each exchange
+                data.exchanges.forEach(ex => loadExchangeSignals(ex.id));
+            } catch (e) {
+                grid.innerHTML = `<div class="col-span-3 text-center py-10 text-red-400">خطأ: ${e.message}</div>`;
+            }
+        }
+
+        function renderExchangeCard(ex) {
+            const statusColor = ex.status === 'online' ? 'bg-green-500' : 'bg-red-500';
+            const trustColor = ex.trustScore >= 95 ? 'text-green-400' : ex.trustScore >= 90 ? 'text-yellow-400' : 'text-orange-400';
+            
+            return `
+            <div onclick="openExchange('${ex.id}')" class="exchange-card cursor-pointer bg-gradient-to-br ${ex.bgGradient} p-[1px] rounded-2xl">
+                <div class="bg-[#111118] rounded-2xl p-5 h-full">
+                    <div class="flex justify-between items-start mb-3">
+                        <div class="flex items-center gap-3">
+                            <div class="w-12 h-12 bg-gradient-to-br ${ex.bgGradient} rounded-xl flex items-center justify-center text-2xl">${ex.logo}</div>
+                            <div>
+                                <div class="font-black text-lg">${ex.displayName}</div>
+                                <div class="text-[10px] text-gray-400">${ex.volume24h} حجم 24س</div>
+                            </div>
+                        </div>
+                        <div class="flex flex-col items-end gap-1">
+                            <div class="flex items-center gap-1 text-[10px] bg-black/50 px-2 py-1 rounded-full border border-gray-800">
+                                <span class="w-2 h-2 ${statusColor} rounded-full animate-pulse"></span> ${ex.status}
+                            </div>
+                            <div class="text-[10px] ${trustColor} font-bold">${ex.trustScore}% ثقة</div>
+                        </div>
+                    </div>
+                    
+                    <div class="text-xs text-gray-300 mb-3">${ex.description_ar}</div>
+                    
+                    <div class="flex flex-wrap gap-1 mb-3">
+                        ${ex.features_ar.map(f => `<span class="text-[9px] bg-gray-800 border border-gray-700 px-2 py-1 rounded-full">${f}</span>`).join('')}
+                    </div>
+                    
+                    <div class="bg-black/50 rounded-xl p-3 mb-3 border border-gray-800">
+                        <div class="flex justify-between text-[10px] text-gray-400 mb-2">
+                            <span>العملات المدعومة</span>
+                            <span>${ex.symbolsCount} عملة</span>
+                        </div>
+                        <div class="flex flex-wrap gap-1">
+                            ${ex.supportedSymbols.slice(0, 4).map(s => `<span class="text-[9px] bg-gray-900 px-2 py-1 rounded">${s}</span>`).join('')}
+                            ${ex.symbolsCount > 4 ? `<span class="text-[9px] text-gray-500">+${ex.symbolsCount - 4}</span>` : ''}
+                        </div>
+                    </div>
+                    
+                    <div class="grid grid-cols-3 gap-2 text-[10px] mb-3">
+                        <div class="bg-black/50 p-2 rounded-lg text-center border border-gray-800">
+                            <div class="text-gray-400">الرسوم</div>
+                            <div class="font-bold">${ex.fees}</div>
+                        </div>
+                        <div class="bg-black/50 p-2 rounded-lg text-center border border-gray-800">
+                            <div class="text-gray-400">إشارات</div>
+                            <div class="font-bold text-yellow-400" id="signals-${ex.id}">...</div>
+                        </div>
+                        <div class="bg-black/50 p-2 rounded-lg text-center border border-gray-800">
+                            <div class="text-gray-400">مشروع</div>
+                            <div class="font-bold text-green-400">جاهز ✅</div>
+                        </div>
+                    </div>
+                    
+                    <button class="w-full bg-gradient-to-r ${ex.bgGradient} hover:opacity-90 text-white font-black py-3 rounded-xl text-sm transition">
+                        🚀 ادخل للمشروع - تحليل الإشارات
+                    </button>
+                </div>
+            </div>
+            `;
+        }
+
+        async function loadExchangeSignals(exchangeId) {
+            try {
+                const res = await fetch(`/api/exchanges/${exchangeId}/signals?timeframe=15m&strategy=all`);
+                const data = await res.json();
+                const el = document.getElementById(`signals-${exchangeId}`);
+                if (el && data.success) {
+                    const strongSignals = data.signals.filter(s => s.confidence >= 70).length;
+                    el.textContent = `${strongSignals} قوية`;
+                    el.className = `font-bold ${strongSignals > 0 ? 'text-green-400' : 'text-gray-400'}`;
+                }
+            } catch (e) {
+                // ignore
+            }
+        }
+
+        function openExchange(id) {
+            window.location.href = `/exchange/${id}`;
+            // For SPA, store and redirect
+            localStorage.setItem('selectedExchange', id);
+            // Also try direct navigation with query
+            window.location.href = `/exchange.html?exchange=${id}`;
+        }
+
+        // Auto load
+        loadExchanges();
+    </script>
+</body>
+</html>
