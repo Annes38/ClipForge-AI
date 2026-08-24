@@ -11,15 +11,18 @@ import { CandleGenerator } from '../engine/backtester';
 import { Candle, Timeframe } from '../engine/types';
 import { exchangeService } from '../exchanges/exchangeService';
 import { EXCHANGES } from '../exchanges/config';
+import { LiveWebSocketServer } from './websocketServer';
 
 const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT) : 8080;
+const WS_PORT = process.env.WS_PORT ? parseInt(process.env.WS_PORT) : 8081;
 
 app.use(cors());
 app.use(express.json());
 app.use(express.static(path.join(__dirname, '../../public')));
 
 const strategyManager = new StrategyManager();
+const liveWsServer = new LiveWebSocketServer();
 
 // Legacy mock for backward compat
 let mockCandles: Record<string, Candle[]> = {
@@ -361,4 +364,12 @@ app.listen(PORT, '0.0.0.0', () => {
   console.log(`🏦 Exchanges: ${EXCHANGES.map(e => e.name).join(', ')}`);
   console.log(`🔌 API: http://0.0.0.0:${PORT}/api/exchanges`);
   console.log(`📋 Strategies: ${strategyManager.listStrategies().map(s => s.id).join(', ')}`);
+  
+  // Start WebSocket Live Server
+  try {
+    liveWsServer.start(WS_PORT);
+    console.log(`🌐 WebSocket Live: ws://0.0.0.0:${WS_PORT} - Broadcasting every second`);
+  } catch (e: any) {
+    console.error(`Failed to start WS server: ${e.message}`);
+  }
 });

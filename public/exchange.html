@@ -28,6 +28,9 @@
                 </div>
             </div>
             <div class="flex gap-2">
+                <div id="liveStatusEx" class="bg-black border border-gray-800 px-3 py-2 rounded-full text-xs">
+                    <span class="w-2 h-2 bg-gray-500 rounded-full inline-block"></span> <span id="liveStatusTextEx">غير متصل</span>
+                </div>
                 <select id="timeframeSelect" class="bg-gray-900 border border-gray-800 px-3 py-2 rounded-full text-sm">
                     <option value="5m">5 دقائق</option>
                     <option value="15m" selected>15 دقيقة</option>
@@ -41,7 +44,8 @@
                     <option value="vwap_institutional">VWAP المؤسسات</option>
                     <option value="momentum_breakout">اختراق الزخم</option>
                 </select>
-                <button id="realDataBtnEx" onclick="enableRealDataForExchange()" class="bg-gradient-to-r from-green-500 to-emerald-600 text-white px-3 py-2 rounded-full font-bold text-xs">📡 بيانات حقيقية</button>
+                <button id="liveBtnEx" onclick="enableLiveForExchange()" class="bg-gradient-to-r from-red-500 to-pink-600 text-white px-3 py-2 rounded-full font-bold text-xs animate-pulse">🔴 LIVE</button>
+                <button id="realDataBtnEx" onclick="enableRealDataForExchange()" class="bg-gradient-to-r from-green-500 to-emerald-600 text-white px-3 py-2 rounded-full font-bold text-xs">📡 حقيقية</button>
                 <button onclick="loadExchangeData()" class="bg-yellow-500 hover:bg-yellow-600 text-black px-4 py-2 rounded-full font-bold text-sm">🔄</button>
             </div>
         </div>
@@ -113,11 +117,14 @@
     </div>
 
     <script src="/js/realDataFetcher.js"></script>
+    <script src="/js/liveWebSocket.js"></script>
     <script>
         let currentExchange = null;
         let allSignals = [];
         let currentFilter = 'all';
         let realDataEnabled = false;
+        let liveEnabled = false;
+        let livePrices = {};
 
         async function enableRealDataForExchange() {
             const exchangeId = getExchangeId();
@@ -363,7 +370,60 @@
             renderSignals(allSignals);
         }
 
-        // Load on start + auto real data
+        async function enableLiveForExchange() {
+            const exchangeId = getExchangeId();
+            const btn = document.getElementById('liveBtnEx');
+            btn.textContent = '⏳ LIVE...';
+
+            window.liveWebSocket.on('onLiveUpdate', (msg) => {
+                if (msg.signals) {
+                    const filtered = msg.signals.filter(s => s.exchangeId === exchangeId);
+                    if (filtered.length > 0) {
+                        allSignals = filtered;
+                        renderSignals(allSignals);
+                    }
+                }
+                document.getElementById('lastUpdate').textContent = new Date().toLocaleTimeString('ar-DZ') + ' LIVE 🔴';
+                document.getElementById('liveStatusTextEx').textContent = `LIVE كل ثانية • ${msg.count} إشارة`;
+            });
+
+            window.liveWebSocket.on('onStatus', (status, text) => {
+                document.getElementById('liveStatusTextEx').textContent = text;
+            });
+
+            window.liveWebSocket.on('onExchangeData', (data) => {
+                if (data.type === 'binance_kline') {
+                    const price = data.candle.close;
+                    livePrices[data.symbol] = price;
+                    document.getElementById('liveStatusTextEx').textContent = `${data.symbol} $${price.toFixed(2)} LIVE 🔴`;
+                    // إذا عندنا شمعة جديدة، أعد حساب الإشارة
+                    if (data.candle.isFinal) {
+                        loadExchangeData();
+                    }
+                }
+                if (data.type === 'price_update') {
+                    livePrices = { ...livePrices, ...data.prices };
+                    const btcPrice = data.prices['BTC/USDT'];
+                    if (btcPrice) {
+                        document.getElementById('liveStatusTextEx').textContent = `BTC $${btcPrice} LIVE 🔴 كل ثانية`;
+                    }
+                }
+            });
+
+            window.liveWebSocket.connectToServer();
+            window.liveWebSocket.subscribe(exchangeId, document.getElementById('timeframeSelect').value, 'all');
+            
+            // فعل Binance Live للـ BTC
+            window.liveWebSocket.connectBinanceLive('btcusdt');
+            window.liveWebSocket.connectBinanceLive('ethusdt');
+            window.liveWebSocket.connectBinanceLive('solusdt');
+
+            liveEnabled = true;
+            btn.textContent = '🔴 LIVE مفعل';
+            btn.className = 'bg-green-600 text-white px-3 py-2 rounded-full font-bold text-xs';
+        }
+
+        // Load on start + auto real data + auto live
         loadExchangeData();
         
         setTimeout(async () => {
@@ -374,8 +434,12 @@
                 console.warn('Auto real data failed:', e);
             }
         }, 1500);
+
+        setTimeout(() => {
+            enableLiveForExchange();
+        }, 2500);
         
-        setInterval(loadExchangeData, 30000);
+        setInterval(loadExchangeData, 10000); // كل 10 ثواني fallback
     </script>
 </body>
 </html>

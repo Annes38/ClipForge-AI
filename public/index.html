@@ -25,11 +25,12 @@
                 </div>
             </div>
             <div class="flex gap-2">
-                <div class="bg-gray-900 px-3 py-1 rounded-full text-xs border border-gray-700">
-                    <span class="w-2 h-2 bg-green-500 rounded-full inline-block animate-pulse"></span> Live
+                <div id="liveStatus" class="bg-gray-900 px-3 py-1 rounded-full text-xs border border-gray-700">
+                    <span class="w-2 h-2 bg-gray-500 rounded-full inline-block"></span> <span id="liveStatusText">غير متصل</span>
                 </div>
-                <button id="realDataBtn" onclick="enableRealData()" class="bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 text-white px-4 py-2 rounded-full font-bold text-sm">📡 فعل بيانات حقيقية</button>
-                <button onclick="loadExchanges()" class="bg-yellow-500 hover:bg-yellow-600 text-black px-4 py-2 rounded-full font-bold text-sm">🔄 تحديث</button>
+                <button id="liveBtn" onclick="enableLive()" class="bg-gradient-to-r from-red-500 to-pink-600 hover:from-red-600 hover:to-pink-700 text-white px-4 py-2 rounded-full font-bold text-sm animate-pulse">🔴 LIVE كل ثانية</button>
+                <button id="realDataBtn" onclick="enableRealData()" class="bg-gradient-to-r from-green-500 to-emerald-600 hover:from-green-600 hover:to-emerald-700 text-white px-4 py-2 rounded-full font-bold text-sm">📡 بيانات حقيقية</button>
+                <button onclick="loadExchanges()" class="bg-yellow-500 hover:bg-yellow-600 text-black px-4 py-2 rounded-full font-bold text-sm">🔄</button>
             </div>
         </div>
     </header>
@@ -95,8 +96,10 @@
     </div>
 
     <script src="/js/realDataFetcher.js"></script>
+    <script src="/js/liveWebSocket.js"></script>
     <script>
         let realDataEnabled = false;
+        let liveEnabled = false;
 
         async function enableRealData() {
             const btn = document.getElementById('realDataBtn');
@@ -241,10 +244,60 @@
             window.location.href = `/exchange.html?exchange=${id}`;
         }
 
-        // Auto load + auto real data
+        async function enableLive() {
+            const btn = document.getElementById('liveBtn');
+            btn.textContent = '⏳ جاري تفعيل LIVE...';
+            
+            // فعل WebSocket Live
+            window.liveWebSocket.on('onLiveUpdate', (msg) => {
+                console.log('Live update received:', msg);
+                // حدث الإشارات
+                if (msg.signals && msg.signals.length > 0) {
+                    // إذا عندنا إشارات حية، اعرضها
+                    const grid = document.getElementById('exchangesGrid');
+                    // لا نعيد رسم المنصات، فقط نحدث عداد الإشارات
+                    msg.signals.forEach(sig => {
+                        const el = document.getElementById(`signals-${sig.exchangeId}`);
+                        if (el) {
+                            el.textContent = `${sig.confidence}% ${sig.action.includes('BUY') ? '📈' : '📉'}`;
+                        }
+                    });
+                }
+                document.getElementById('liveStatusText').textContent = `LIVE ${new Date().toLocaleTimeString('ar-DZ')} • ${msg.count} إشارة`;
+            });
+
+            window.liveWebSocket.on('onStatus', (status, text) => {
+                document.getElementById('liveStatusText').textContent = text;
+                const indicator = document.querySelector('#liveStatus span');
+                if (indicator) {
+                    indicator.className = `w-2 h-2 ${status.includes('connected') || status.includes('live') ? 'bg-green-500' : 'bg-red-500'} rounded-full inline-block animate-pulse`;
+                }
+            });
+
+            window.liveWebSocket.on('onExchangeData', (data) => {
+                if (data.type === 'price_update') {
+                    // حدث أسعار حية
+                    const prices = data.prices;
+                    if (prices['BTC/USDT']) {
+                        document.getElementById('liveStatusText').textContent = `BTC $${prices['BTC/USDT']} LIVE`;
+                    }
+                }
+            });
+
+            window.liveWebSocket.connectToServer();
+            
+            // فعل Binance Live مباشرة من المتصفح
+            window.liveWebSocket.connectBinanceLive('btcusdt');
+            window.liveWebSocket.connectOKXLive();
+
+            liveEnabled = true;
+            btn.textContent = '🔴 LIVE مفعل كل ثانية';
+            btn.className = 'bg-green-600 text-white px-4 py-2 rounded-full font-bold text-sm';
+        }
+
+        // Auto load + auto real data + auto live
         loadExchanges();
         
-        // بعد 2 ثانية، فعل البيانات الحقيقية تلقائياً
         setTimeout(async () => {
             console.log('🚀 Auto-enabling real data...');
             try {
@@ -253,6 +306,11 @@
                 console.warn('Auto real data failed:', e);
             }
         }, 2000);
+
+        setTimeout(() => {
+            console.log('🚀 Auto-enabling LIVE...');
+            enableLive();
+        }, 3000);
     </script>
 </body>
 </html>
